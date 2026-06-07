@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files — never commit real credentials
+.env
+.env.local
+.env.*.local
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Vite-compiled config artifacts (generated from vite.config.ts)
+vite.config.js
+vite.config.d.ts
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

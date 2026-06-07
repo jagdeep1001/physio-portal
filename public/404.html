@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Physio Portal</title>
+    <script>
+      // GitHub Pages SPA fix: redirect back to index so React can handle routing
+      sessionStorage.setItem('redirect', location.href);
+      location.replace(location.origin + location.pathname.split('/').slice(0, 2).join('/'));
+    </script>
+  </head>
+  <body></body>
+</html>
