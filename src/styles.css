@@ -306,6 +306,9 @@ nav { display: grid; gap: 4px; }
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
 }
+.metric-grid-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
 
 .metric-card {
   background: var(--surface);
@@ -344,6 +347,7 @@ nav { display: grid; gap: 4px; }
 
 .metric-label { font-size: 0.78rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .metric-value { font-size: 1.6rem; font-weight: 800; color: var(--ink); letter-spacing: -0.03em; margin: 0; }
+.metric-sub   { font-size: 0.7rem; color: var(--muted); line-height: 1.3; margin-top: -2px; }
 
 /* ── Role pills / badges ── */
 .role-pill, .badge {
@@ -603,6 +607,19 @@ small { color: var(--muted); font-size: 0.8rem; }
   gap: 6px;
 }
 .stat-num-item strong { font-size: 1.5rem; font-weight: 800; color: var(--ink); }
+.stat-revenue-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-top: 2px;
+  color: var(--muted);
+}
+.stat-num-scheduled { border-top: 3px solid var(--blue); }
+.stat-num-completed { border-top: 3px solid var(--green); }
+.stat-num-scheduled .stat-revenue-line { color: #1d4ed8; }
+.stat-num-completed .stat-revenue-line { color: var(--green-dark); }
 
 /* Horizontal bars */
 .horiz-bars { display: flex; flex-direction: column; gap: 10px; }
@@ -2001,8 +2018,9 @@ textarea { min-height: 76px; resize: vertical; }
 
 /* ── Responsive ── */
 @media (max-width: 1200px) {
-  .metric-grid { grid-template-columns: repeat(2, 1fr); }
-  .dash-charts-row { grid-template-columns: 1fr 1fr; }
+  .metric-grid          { grid-template-columns: repeat(2, 1fr); }
+  .metric-grid-5        { grid-template-columns: repeat(3, 1fr); }
+  .dash-charts-row      { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 1080px) {
@@ -2025,7 +2043,7 @@ textarea { min-height: 76px; resize: vertical; }
 
 @media (max-width: 720px) {
   .main { padding: 16px; }
-  .metric-grid { grid-template-columns: 1fr 1fr; }
+  .metric-grid, .metric-grid-5 { grid-template-columns: 1fr 1fr; }
   .clinic-grid, .form-two-col, .add-report-form, .record-session-grid { grid-template-columns: 1fr; }
   .topbar, .toolbar { flex-direction: column; align-items: stretch; }
   .calendar-cell { min-height: 64px; }

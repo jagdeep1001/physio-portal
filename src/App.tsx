@@ -180,7 +180,8 @@ function formatCurrency(amount: number | null) {
 
 // ─── App Root ────────────────────────────────────────────────────────────────
 
-const SESSION_USER_KEY = 'physio_session_user_id';
+const SESSION_USER_KEY      = 'physio_session_user_id';
+const SESSION_TIMEOUT_MINS  = 30;   // auto-logout after 30 min of inactivity
 
 export function App() {
   const [data, setData] = useState<AppData>(() => loadInitialData());
@@ -256,6 +257,26 @@ export function App() {
     };
     void restore();
   }, []);
+
+  // Auto-logout after SESSION_TIMEOUT_MINS of inactivity (DPDP / HIPAA requirement)
+  useEffect(() => {
+    if (!currentUser) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        signOut();
+        alert('You have been logged out due to inactivity.');
+      }, SESSION_TIMEOUT_MINS * 60 * 1000);
+    };
+    const events = ['mousemove', 'keydown', 'pointerdown', 'scroll', 'touchstart'];
+    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    reset();
+    return () => {
+      clearTimeout(timer);
+      events.forEach((e) => window.removeEventListener(e, reset));
+    };
+  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const persist = (updater: (draft: AppData) => AppData) => {
     setData((current) => {
@@ -884,11 +905,16 @@ function Dashboard({
   const allSessions = data.therapySessions;
 
   // ── KPI numbers ──
-  const totalRevenue   = allSessions
+  const completedSess    = allSessions.filter((s) => s.status === 'completed').length;
+  const scheduledSess    = allSessions.filter((s) => s.status === 'scheduled').length;
+  // Actual revenue — only completed sessions with a recorded payment
+  const actualRevenue    = allSessions
     .filter((s) => s.status === 'completed' && s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
-  const completedSess  = allSessions.filter((s) => s.status === 'completed').length;
-  const scheduledSess  = allSessions.filter((s) => s.status === 'scheduled').length;
+  // Estimated revenue — scheduled sessions where an expected amount was pre-recorded
+  const estimatedRevenue = allSessions
+    .filter((s) => s.status === 'scheduled' && s.amountCollected !== null)
+    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
   const activePatients = data.patients.filter((p) => p.active).length;
   const todayClinic    = allSessions.filter((s) => s.scheduledAt.startsWith(today) && s.sessionType === 'clinic').length;
   const todayHome      = allSessions.filter((s) => s.scheduledAt.startsWith(today) && s.sessionType === 'home').length;
@@ -952,11 +978,14 @@ function Dashboard({
       )}
 
       {/* ── Row 1: KPI cards ── */}
-      <section className="metric-grid">
-        <MetricCard icon={Users}       label="Active patients"   value={activePatients.toString()} accent="teal" />
-        <MetricCard icon={DollarSign}  label="Total revenue"     value={formatCurrency(totalRevenue)} accent="green" />
-        <MetricCard icon={CalendarDays} label="Sessions today"   value={(todayClinic + todayHome).toString()} accent="blue" />
-        <MetricCard icon={Activity}    label="Completion rate"   value={`${completionRate}%`} accent="amber" />
+      <section className="metric-grid metric-grid-5">
+        <MetricCard icon={Users}        label="Active patients"    value={activePatients.toString()} accent="teal" />
+        <MetricCard icon={DollarSign}   label="Actual revenue"     value={formatCurrency(actualRevenue)}    accent="green"
+          sub="Completed sessions with payment" />
+        <MetricCard icon={TrendingUp}   label="Estimated revenue"  value={estimatedRevenue > 0 ? formatCurrency(estimatedRevenue) : '—'}
+          accent="blue" sub="Scheduled sessions (pre-set)" />
+        <MetricCard icon={CalendarDays} label="Sessions today"     value={(todayClinic + todayHome).toString()} accent="amber" />
+        <MetricCard icon={Activity}     label="Completion rate"    value={`${completionRate}%`} accent="teal" />
       </section>
 
       {/* ── Row 2: Charts ── */}
@@ -1047,13 +1076,21 @@ function Dashboard({
         <div className="panel">
           <PanelTitle title="Session status" subtitle="All time breakdown" />
           <div className="stat-numbers">
-            <div className="stat-num-item">
+            <div className="stat-num-item stat-num-scheduled">
               <strong>{scheduledSess}</strong>
               <span className="status scheduled">Scheduled</span>
+              <div className="stat-revenue-line">
+                <TrendingUp size={11} />
+                <span>Est. {estimatedRevenue > 0 ? formatCurrency(estimatedRevenue) : '—'}</span>
+              </div>
             </div>
-            <div className="stat-num-item">
+            <div className="stat-num-item stat-num-completed">
               <strong>{completedSess}</strong>
               <span className="status completed">Completed</span>
+              <div className="stat-revenue-line">
+                <DollarSign size={11} />
+                <span>{formatCurrency(actualRevenue)} collected</span>
+              </div>
             </div>
             <div className="stat-num-item">
               <strong>{allSessions.filter((s) => s.status === 'cancelled').length}</strong>
@@ -3767,18 +3804,20 @@ function StaffCard({
 // ─── Shared Components ────────────────────────────────────────────────────────
 
 function MetricCard({
-  icon: Icon, label, value, accent,
+  icon: Icon, label, value, accent, sub,
 }: {
   icon: LucideIcon;
   label: string;
   value: string;
   accent: 'teal' | 'blue' | 'amber' | 'green';
+  sub?: string;
 }) {
   return (
     <div className={`metric-card accent-${accent}`}>
       <div className="metric-icon-wrap"><Icon size={20} /></div>
       <span className="metric-label">{label}</span>
       <strong className="metric-value">{value}</strong>
+      {sub && <span className="metric-sub">{sub}</span>}
     </div>
   );
 }
