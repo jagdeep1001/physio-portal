@@ -42,6 +42,7 @@ export interface HomeVisitDetails {
   caregiverRelation: string;
   caregiverPhone: string;
   condition: string;
+  homeVisitStartDate: string;
   dischargeDate: string;
   homeSessionLog: string[]; // ISO date strings of sessions marked done
   homeSessionNotes: Record<string, HomeSessionRecord>; // per-day notes + amount
@@ -49,12 +50,14 @@ export interface HomeVisitDetails {
 
 export interface Patient {
   id: string;
-  clinicId: string;
+  clinicId: string | null;
   name: string;
   phone: string;
   dateOfBirth: string;
   gender: Gender;
   address: string;
+  signs: string;
+  symptoms: string;
   diagnosis: string;
   referralSource: string;
   emergencyContact: string;
@@ -69,7 +72,7 @@ export interface Patient {
 export interface TherapySession {
   id: string;
   patientId: string;
-  clinicId: string;
+  clinicId: string | null;
   scheduledAt: string;
   therapyType: string;
   sessionType: SessionType;

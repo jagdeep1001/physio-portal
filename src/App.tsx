@@ -13,6 +13,7 @@ import {
   FileText,
   Home,
   LayoutDashboard,
+  Lock,
   LogOut,
   Plus,
   Search,
@@ -57,11 +58,13 @@ import type {
 
 type Page =
   | 'dashboard'
+  | 'homeDashboard'
   | 'patients'
   | 'patientEntry'
   | 'patientDetail'
   | 'sessions'
   | 'scheduleNew'
+  | 'homeVisits'
   | 'calendar'
   | 'clinics'
   | 'staff';
@@ -77,18 +80,21 @@ const emptyHomeVisitDetails = (): HomeVisitDetails => ({
   caregiverRelation: '',
   caregiverPhone: '',
   condition: '',
+  homeVisitStartDate: '',
   dischargeDate: '',
   homeSessionLog: [],
   homeSessionNotes: {},
 });
 
-const emptyPatient = (clinicId: string): PatientDraft => ({
+const emptyPatient = (clinicId: string | null): PatientDraft => ({
   clinicId,
   name: '',
   phone: '',
   dateOfBirth: '',
   gender: 'Female',
   address: '',
+  signs: '',
+  symptoms: '',
   diagnosis: '',
   referralSource: '',
   emergencyContact: '',
@@ -116,10 +122,12 @@ function loadInitialData(): AppData {
         return {
           ...p,
           reports: (p as Patient).reports ?? [],
+          signs:         (p as Patient).signs         ?? '',
+          symptoms:      (p as Patient).symptoms      ?? '',
           complications: (p as Patient).complications ?? '',
-          surgeries: (p as Patient).surgeries ?? '',
+          surgeries:     (p as Patient).surgeries     ?? '',
           homeVisitDetails: hvd
-            ? { ...hvd, caregiverPhone: hvd.caregiverPhone ?? '', homeSessionLog: hvd.homeSessionLog ?? [], homeSessionNotes: hvd.homeSessionNotes ?? {} }
+            ? { ...hvd, caregiverPhone: hvd.caregiverPhone ?? '', homeVisitStartDate: hvd.homeVisitStartDate ?? '', homeSessionLog: hvd.homeSessionLog ?? [], homeSessionNotes: hvd.homeSessionNotes ?? {} }
             : undefined,
         };
       }),
@@ -300,8 +308,8 @@ export function App() {
         currentUser?.role === 'admin'
           ? data.profiles
           : data.profiles.filter((p) => !p.clinicId || visibleClinicIds.includes(p.clinicId)),
-      patients: data.patients.filter((p) => visibleClinicIds.includes(p.clinicId)),
-      therapySessions: data.therapySessions.filter((s) => visibleClinicIds.includes(s.clinicId)),
+      patients: data.patients.filter((p) => p.clinicId === null || visibleClinicIds.includes(p.clinicId)),
+      therapySessions: data.therapySessions.filter((s) => s.clinicId === null || visibleClinicIds.includes(s.clinicId)),
     };
   }, [currentUser?.role, data, visibleClinicIds]);
 
@@ -648,8 +656,10 @@ export function App() {
 
   const navItems: Array<{ page: Page; label: string; icon: LucideIcon; adminOnly?: boolean }> = [
     { page: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { page: 'homeDashboard', label: 'Home Dashboard', icon: Home },
     { page: 'patients', label: 'Patients', icon: Users },
     { page: 'sessions', label: 'Sessions', icon: CalendarDays },
+    { page: 'homeVisits', label: 'Home Visits', icon: Home },
     { page: 'calendar', label: 'Calendar', icon: Calendar },
     { page: 'clinics', label: 'Clinics', icon: Building2, adminOnly: true },
     { page: 'staff', label: 'Staff', icon: UserCheck, adminOnly: true },
@@ -662,7 +672,7 @@ export function App() {
 
   const goToScheduleForPatient = (patientId: string, sessionType: SessionType) => {
     setSchedulePreset({ patientId, sessionType });
-    setPage('scheduleNew');
+    setPage(sessionType === 'home' ? 'homeVisits' : 'scheduleNew');
   };
 
   return (
@@ -733,6 +743,12 @@ export function App() {
             onOpenPatient={goToPatientDetail}
           />
         )}
+        {page === 'homeDashboard' && (
+          <HomeDashboard
+            data={scoped}
+            onOpenPatient={goToPatientDetail}
+          />
+        )}
         {page === 'patients' && (
           <PatientsView
             data={scoped}
@@ -774,6 +790,19 @@ export function App() {
             onRecordSession={addSession}
           />
         )}
+        {page === 'homeVisits' && (
+          <HomeVisitsView
+            data={scoped}
+            currentUser={currentUser}
+            preset={schedulePreset}
+            onAddSession={addSession}
+            onUpdateSession={updateSession}
+            onChangeStatus={changeSessionStatus}
+            onDeleteSession={deleteSession}
+            onOpenPatient={goToPatientDetail}
+            onClearPreset={() => setSchedulePreset({})}
+          />
+        )}
         {page === 'scheduleNew' && (
           <ScheduleNewPage
             data={scoped}
@@ -792,6 +821,7 @@ export function App() {
             allClinics={data.clinics}
             currentUser={currentUser}
             onOpenPatient={goToPatientDetail}
+            onAddSession={addSession}
           />
         )}
         {page === 'clinics' && currentUser.role === 'admin' && (
@@ -902,7 +932,15 @@ function Dashboard({
   onOpenPatient: (id: string) => void;
 }) {
   const today = todayStr;
-  const allSessions = data.therapySessions;
+  const [clinicFilter, setClinicFilter] = useState(
+    currentUser.role === 'admin' ? 'all' : currentUser.clinicId ?? data.clinics[0]?.id ?? 'all'
+  );
+  const allSessions = data.therapySessions
+    .filter((s) => s.sessionType === 'clinic')
+    .filter((s) => clinicFilter === 'all' || s.clinicId === clinicFilter);
+  const dashboardPatients = data.patients
+    .filter((p) => p.clinicId !== null)
+    .filter((p) => clinicFilter === 'all' || p.clinicId === clinicFilter);
 
   // ── KPI numbers ──
   const completedSess    = allSessions.filter((s) => s.status === 'completed').length;
@@ -915,11 +953,9 @@ function Dashboard({
   const estimatedRevenue = allSessions
     .filter((s) => s.status === 'scheduled' && s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
-  const activePatients = data.patients.filter((p) => p.active).length;
+  const activePatients = dashboardPatients.filter((p) => p.active).length;
   const todayClinic    = allSessions.filter((s) => s.scheduledAt.startsWith(today) && s.sessionType === 'clinic').length;
-  const todayHome      = allSessions.filter((s) => s.scheduledAt.startsWith(today) && s.sessionType === 'home').length;
   const clinicSessions = allSessions.filter((s) => s.sessionType === 'clinic').length;
-  const homeSessions   = allSessions.filter((s) => s.sessionType === 'home').length;
   const totalSessions  = allSessions.length;
   const completionRate = totalSessions > 0 ? Math.round((completedSess / totalSessions) * 100) : 0;
 
@@ -933,9 +969,8 @@ function Dashboard({
     label: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(new Date(dateStr + 'T12:00')),
     dateStr,
     clinic: allSessions.filter((s) => s.scheduledAt.startsWith(dateStr) && s.sessionType === 'clinic').length,
-    home:   allSessions.filter((s) => s.scheduledAt.startsWith(dateStr) && s.sessionType === 'home').length,
   }));
-  const maxWeekly = Math.max(...weeklyVolume.map((d) => d.clinic + d.home), 1);
+  const maxWeekly = Math.max(...weeklyVolume.map((d) => d.clinic), 1);
 
   // ── Revenue last 7 days ──
   const weeklyRevenue = weekDays.map((dateStr) => ({
@@ -948,7 +983,8 @@ function Dashboard({
 
   // ── This month revenue per clinic ──
   const thisMonth = today.slice(0, 7);
-  const clinicRevenue = data.clinics.map((clinic) => {
+  const revenueClinics = data.clinics.filter((clinic) => clinicFilter === 'all' || clinic.id === clinicFilter);
+  const clinicRevenue = revenueClinics.map((clinic) => {
     const amount = allSessions
       .filter((s) => s.clinicId === clinic.id && s.status === 'completed' && s.amountCollected !== null && s.scheduledAt.startsWith(thisMonth))
       .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
@@ -964,7 +1000,7 @@ function Dashboard({
     .slice(0, 5);
 
   // ── Recent patients ──
-  const recentPatients = data.patients.slice(0, 5);
+  const recentPatients = dashboardPatients.slice(0, 5);
 
   const pendingStaff = allData.profiles.filter((p) => p.status === 'pending');
 
@@ -977,6 +1013,23 @@ function Dashboard({
         </div>
       )}
 
+      <section className="panel compact-filter-panel">
+        <div className="toolbar">
+          <PanelTitle title="Clinic dashboard" subtitle="Clinic sessions only — home visits are tracked separately" />
+          <div className="toolbar-right">
+            <select
+              className="clinic-filter-select"
+              value={clinicFilter}
+              onChange={(e) => setClinicFilter(e.target.value)}
+              disabled={currentUser.role !== 'admin'}
+            >
+              {currentUser.role === 'admin' && <option value="all">All clinics</option>}
+              {data.clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+        </div>
+      </section>
+
       {/* ── Row 1: KPI cards ── */}
       <section className="metric-grid metric-grid-5">
         <MetricCard icon={Users}        label="Active patients"    value={activePatients.toString()} accent="teal" />
@@ -984,7 +1037,7 @@ function Dashboard({
           sub="Completed sessions with payment" />
         <MetricCard icon={TrendingUp}   label="Estimated revenue"  value={estimatedRevenue > 0 ? formatCurrency(estimatedRevenue) : '—'}
           accent="blue" sub="Scheduled sessions (pre-set)" />
-        <MetricCard icon={CalendarDays} label="Sessions today"     value={(todayClinic + todayHome).toString()} accent="amber" />
+        <MetricCard icon={CalendarDays} label="Clinic sessions today" value={todayClinic.toString()} accent="amber" />
         <MetricCard icon={Activity}     label="Completion rate"    value={`${completionRate}%`} accent="teal" />
       </section>
 
@@ -996,15 +1049,13 @@ function Dashboard({
           <PanelTitle title="Weekly volume" subtitle="Sessions per day — last 7 days" />
           <div className="bar-chart">
             {weeklyVolume.map((day) => {
-              const total = day.clinic + day.home;
+              const total = day.clinic;
               const clinicPct = maxWeekly > 0 ? (day.clinic / maxWeekly) * 100 : 0;
-              const homePct   = maxWeekly > 0 ? (day.home   / maxWeekly) * 100 : 0;
               const isToday   = day.dateStr === today;
               return (
                 <div key={day.dateStr} className={`bar-col ${isToday ? 'today' : ''}`}>
                   <span className="bar-value">{total > 0 ? total : ''}</span>
                   <div className="bar-stack">
-                    {homePct > 0 && <div className="bar-segment home" style={{ height: `${homePct}%` }} />}
                     {clinicPct > 0 && <div className="bar-segment clinic" style={{ height: `${clinicPct}%` }} />}
                   </div>
                   <span className="bar-label">{day.label}</span>
@@ -1014,17 +1065,16 @@ function Dashboard({
           </div>
           <div className="chart-legend">
             <span><span className="legend-dot clinic" />Clinic</span>
-            <span><span className="legend-dot home" />Home</span>
           </div>
         </div>
 
-        {/* Attendance mix donut */}
+        {/* Clinic status donut */}
         <div className="panel dash-chart-panel">
-          <PanelTitle title="Attendance mix" subtitle="Clinic vs home breakdown" />
+          <PanelTitle title="Clinic session mix" subtitle="Scheduled vs completed" />
           <DonutChart
             segments={[
-              { label: 'Clinic', value: clinicSessions, color: 'var(--teal)' },
-              { label: 'Home',   value: homeSessions,   color: 'var(--amber)' },
+              { label: 'Scheduled', value: scheduledSess, color: 'var(--blue)' },
+              { label: 'Completed', value: completedSess, color: 'var(--green)' },
             ]}
             total={totalSessions}
             centerLabel={totalSessions.toString()}
@@ -1033,15 +1083,15 @@ function Dashboard({
           <div className="donut-legend">
             <div className="donut-legend-item">
               <span className="donut-dot" style={{ background: 'var(--teal)' }} />
-              <span>Clinic</span>
+              <span>Total clinic</span>
               <strong>{clinicSessions}</strong>
               <small>{totalSessions > 0 ? Math.round((clinicSessions / totalSessions) * 100) : 0}%</small>
             </div>
             <div className="donut-legend-item">
-              <span className="donut-dot" style={{ background: 'var(--amber)' }} />
-              <span>Home visits</span>
-              <strong>{homeSessions}</strong>
-              <small>{totalSessions > 0 ? Math.round((homeSessions / totalSessions) * 100) : 0}%</small>
+              <span className="donut-dot" style={{ background: 'var(--green)' }} />
+              <span>Completed</span>
+              <strong>{completedSess}</strong>
+              <small>{totalSessions > 0 ? Math.round((completedSess / totalSessions) * 100) : 0}%</small>
             </div>
           </div>
         </div>
@@ -1234,6 +1284,132 @@ function DonutChart({
   );
 }
 
+// ─── Home Dashboard ───────────────────────────────────────────────────────────
+
+function HomeDashboard({
+  data, onOpenPatient,
+}: {
+  data: Pick<AppData, 'patients' | 'therapySessions' | 'clinics'>;
+  onOpenPatient: (id: string) => void;
+}) {
+  const today = todayStr;
+  const homeSessions = data.therapySessions.filter((s) => s.sessionType === 'home');
+  const homePatientIds = new Set(homeSessions.map((s) => s.patientId));
+  const homePatients = data.patients.filter((p) => p.homeVisitDetails || homePatientIds.has(p.id));
+  const completed = homeSessions.filter((s) => s.status === 'completed');
+  const scheduled = homeSessions.filter((s) => s.status === 'scheduled');
+  const todayHome = homeSessions.filter((s) => s.scheduledAt.startsWith(today)).length;
+  const upcoming = scheduled
+    .filter((s) => s.scheduledAt >= today)
+    .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))
+    .slice(0, 6);
+  const revenue = completed
+    .filter((s) => s.amountCollected !== null)
+    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const attentionPatients = homePatients
+    .map((patient) => {
+      const sessions = homeSessions.filter((s) => s.patientId === patient.id);
+      const lastDone = sessions
+        .filter((s) => s.status === 'completed')
+        .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
+      const next = sessions
+        .filter((s) => s.status === 'scheduled' && s.scheduledAt >= today)
+        .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
+      return { patient, lastDone, next, count: sessions.length };
+    })
+    .filter((item) => !item.next || !item.lastDone)
+    .slice(0, 6);
+
+  const totalHome = homeSessions.length;
+  const completionRate = totalHome > 0 ? Math.round((completed.length / totalHome) * 100) : 0;
+  const cancelled = homeSessions.filter((s) => s.status === 'cancelled' || s.status === 'no_show').length;
+
+  return (
+    <div className="content-stack home-dashboard">
+      <section className="panel home-dashboard-hero">
+        <div>
+          <p className="eyebrow">Home care operations</p>
+          <h2>Home Visit Dashboard</h2>
+          <p>Focused view for caregiver-linked patients, home schedules, completions, and collections.</p>
+        </div>
+        <Home size={38} />
+      </section>
+
+      <section className="metric-grid metric-grid-5">
+        <MetricCard icon={Users} label="Home patients" value={homePatients.length.toString()} accent="teal" />
+        <MetricCard icon={CalendarDays} label="Today" value={todayHome.toString()} accent="amber" />
+        <MetricCard icon={Activity} label="Upcoming" value={upcoming.length.toString()} accent="blue" />
+        <MetricCard icon={Check} label="Completed" value={completed.length.toString()} accent="green" />
+        <MetricCard icon={DollarSign} label="Home revenue" value={formatCurrency(revenue)} accent="teal" />
+      </section>
+
+      <section className="dash-charts-row">
+        <div className="panel dash-chart-panel">
+          <PanelTitle title="Home visit status" subtitle="Scheduled, completed and missed visits" />
+          <DonutChart
+            segments={[
+              { label: 'Scheduled', value: scheduled.length, color: 'var(--blue)' },
+              { label: 'Completed', value: completed.length, color: 'var(--green)' },
+              { label: 'Missed', value: cancelled, color: 'var(--coral)' },
+            ]}
+            total={totalHome}
+            centerLabel={`${completionRate}%`}
+            centerSub="done"
+          />
+          <div className="donut-legend">
+            <div className="donut-legend-item"><span className="donut-dot" style={{ background: 'var(--blue)' }} /><span>Scheduled</span><strong>{scheduled.length}</strong></div>
+            <div className="donut-legend-item"><span className="donut-dot" style={{ background: 'var(--green)' }} /><span>Completed</span><strong>{completed.length}</strong></div>
+            <div className="donut-legend-item"><span className="donut-dot" style={{ background: 'var(--coral)' }} /><span>Missed/cancelled</span><strong>{cancelled}</strong></div>
+          </div>
+        </div>
+
+        <div className="panel dash-chart-panel">
+          <PanelTitle title="Upcoming home visits" subtitle="Next scheduled visits" />
+          {upcoming.length === 0 ? (
+            <EmptyState message="No upcoming home visits" />
+          ) : (
+            <div className="compact-list">
+              {upcoming.map((session) => {
+                const patient = data.patients.find((p) => p.id === session.patientId);
+                return (
+                  <button key={session.id} className="compact-row clickable" onClick={() => patient && onOpenPatient(patient.id)}>
+                    <span className="compact-type-dot home" />
+                    <div className="compact-info">
+                      <strong>{patient?.name ?? 'Unknown patient'}</strong>
+                      <small>{formatDateTime(session.scheduledAt)} · {session.therapyType}</small>
+                    </div>
+                    <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="panel dash-chart-panel">
+          <PanelTitle title="Needs attention" subtitle="No next visit or no completed visit yet" />
+          {attentionPatients.length === 0 ? (
+            <EmptyState message="All home patients have activity" />
+          ) : (
+            <div className="compact-list">
+              {attentionPatients.map(({ patient, lastDone, next, count }) => (
+                <button key={patient.id} className="compact-row clickable" onClick={() => onOpenPatient(patient.id)}>
+                  <span className="compact-avatar">{patient.name.charAt(0)}</span>
+                  <div className="compact-info">
+                    <strong>{patient.name}</strong>
+                    <small>{next ? `Next ${formatDateTime(next.scheduledAt)}` : 'No upcoming visit'} · {lastDone ? `Last ${formatDate(lastDone.scheduledAt)}` : 'No completed visit'}</small>
+                  </div>
+                  <span className="compact-count">{count} visits</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // ─── Patients View ────────────────────────────────────────────────────────────
 
 function PatientsView({
@@ -1383,6 +1559,8 @@ function PatientDetailView({
       dateOfBirth: patient.dateOfBirth,
       gender: patient.gender,
       address: patient.address,
+      signs: patient.signs ?? '',
+      symptoms: patient.symptoms ?? '',
       diagnosis: patient.diagnosis,
       referralSource: patient.referralSource,
       emergencyContact: patient.emergencyContact,
@@ -1472,6 +1650,22 @@ function PatientDetailView({
           <span><strong>Referral</strong>{patient.referralSource || '—'}</span>
           <span><strong>DOB</strong>{patient.dateOfBirth ? formatDate(patient.dateOfBirth) : '—'}</span>
         </div>
+        {(patient.signs || patient.symptoms) && (
+          <div className="signs-symptoms-row">
+            {patient.signs && (
+              <div className="signs-block">
+                <span className="ss-label">Signs</span>
+                <p>{patient.signs}</p>
+              </div>
+            )}
+            {patient.symptoms && (
+              <div className="symptoms-block">
+                <span className="ss-label">Symptoms</span>
+                <p>{patient.symptoms}</p>
+              </div>
+            )}
+          </div>
+        )}
         {(patient.complications || patient.surgeries) && (
           <div className="complications-row">
             {patient.complications && (
@@ -1558,6 +1752,7 @@ function PatientDetailView({
             const buildPayload = (newHvd: HomeVisitDetails): PatientDraft => ({
               clinicId: patient.clinicId, name: patient.name, phone: patient.phone,
               dateOfBirth: patient.dateOfBirth, gender: patient.gender, address: patient.address,
+              signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
               diagnosis: patient.diagnosis, referralSource: patient.referralSource,
               emergencyContact: patient.emergencyContact, notes: patient.notes,
               complications: patient.complications ?? '', surgeries: patient.surgeries ?? '',
@@ -1594,7 +1789,7 @@ function PatientDetailView({
                       treatmentNotes: record.notes, amountCollected: record.amount,
                     }}
                   : { action: 'create', session: {
-                      patientId: patient.id, clinicId: patient.clinicId,
+                      patientId: patient.id, clinicId: null,
                       sessionType: 'home', therapyType: 'Home Visit', therapyLevel: 'basic',
                       assignedStaffId: '', scheduledAt: `${date}T09:00:00.000Z`,
                       status: 'completed', completedAt: `${date}T09:00:00.000Z`,
@@ -1715,7 +1910,7 @@ function HomeVisitPanel({
       <PanelTitle title="Home visit record" subtitle={`${homeVisitSessions.length} home sessions scheduled`} />
 
       {/* Caregiver card */}
-      {hvd && (hvd.caregiverName || hvd.condition) && (
+      {hvd && (hvd.caregiverName || hvd.condition || hvd.homeVisitStartDate) && (
         <div className="caregiver-card">
           <div className="caregiver-icon"><Home size={20} /></div>
           <div className="caregiver-details">
@@ -1734,6 +1929,11 @@ function HomeVisitPanel({
             {hvd.condition && (
               <div className="caregiver-row">
                 <strong>Condition:</strong><span>{hvd.condition}</span>
+              </div>
+            )}
+            {hvd.homeVisitStartDate && (
+              <div className="caregiver-row">
+                <strong>Home visit started:</strong><span>{formatDate(hvd.homeVisitStartDate)}</span>
               </div>
             )}
             {hvd.dischargeDate && (
@@ -1863,12 +2063,19 @@ function PatientForm({
       <PanelTitle title={title} subtitle="Clinical record details" />
 
       <div className="form-two-col">
-        <label>
-          Clinic
-          <select value={draft.clinicId} onChange={(e) => setDraft({ ...draft, clinicId: e.target.value })}>
-            {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </label>
+        {!draft.homeVisitDetails ? (
+          <label>
+            Clinic <span className="required">*</span>
+            <select required value={draft.clinicId ?? ''} onChange={(e) => setDraft({ ...draft, clinicId: e.target.value })}>
+              {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </label>
+        ) : (
+          <div className="home-no-clinic-note">
+            <Home size={15} />
+            Home-visit patient — no clinic assignment required
+          </div>
+        )}
         <label>
           Gender
           <select value={draft.gender} onChange={(e) => setDraft({ ...draft, gender: e.target.value as Patient['gender'] })}>
@@ -1886,6 +2093,9 @@ function PatientForm({
         <label>
           Date of birth
           <input required type="date" value={draft.dateOfBirth} onChange={(e) => setDraft({ ...draft, dateOfBirth: e.target.value })} />
+          {draft.dateOfBirth && (
+            <span className="dob-age-hint">Age: <strong>{calculateAge(draft.dateOfBirth)} yrs</strong></span>
+          )}
         </label>
         <label>
           Address
@@ -1898,6 +2108,27 @@ function PatientForm({
         <label>
           Emergency contact
           <input value={draft.emergencyContact} onChange={(e) => setDraft({ ...draft, emergencyContact: e.target.value })} />
+        </label>
+      </div>
+
+      <div className="form-two-col">
+        <label>
+          Signs
+          <textarea
+            value={draft.signs ?? ''}
+            onChange={(e) => setDraft({ ...draft, signs: e.target.value })}
+            placeholder="Observable clinical signs (e.g. swelling, tenderness, reduced ROM)"
+            rows={3}
+          />
+        </label>
+        <label>
+          Symptoms
+          <textarea
+            value={draft.symptoms ?? ''}
+            onChange={(e) => setDraft({ ...draft, symptoms: e.target.value })}
+            placeholder="Patient-reported symptoms (e.g. pain, stiffness, weakness)"
+            rows={3}
+          />
         </label>
       </div>
 
@@ -1939,14 +2170,14 @@ function PatientForm({
           {!draft.homeVisitDetails ? (
             <button
               type="button" className="ghost-button"
-              onClick={() => setDraft({ ...draft, homeVisitDetails: emptyHomeVisitDetails() })}
+              onClick={() => setDraft({ ...draft, clinicId: null, homeVisitDetails: emptyHomeVisitDetails() })}
             >
               <Plus size={14} /> Enable
             </button>
           ) : (
             <button
               type="button" className="ghost-button"
-              onClick={() => setDraft({ ...draft, homeVisitDetails: undefined })}
+              onClick={() => setDraft({ ...draft, clinicId: clinics[0]?.id ?? '', homeVisitDetails: undefined })}
             >
               <X size={14} /> Remove
             </button>
@@ -1985,6 +2216,14 @@ function PatientForm({
                 value={draft.homeVisitDetails.condition}
                 onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, condition: e.target.value } })}
                 placeholder="e.g. Post-discectomy recovery"
+              />
+            </label>
+            <label>
+              Home visit started
+              <input
+                type="date"
+                value={draft.homeVisitDetails.homeVisitStartDate ?? ''}
+                onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, homeVisitStartDate: e.target.value } })}
               />
             </label>
             <label>
@@ -2071,7 +2310,6 @@ function SessionsView({
   const [completingId, setCompletingId] = useState<string | null>(null);
   const [completionData, setCompletionData] = useState({ treatmentNotes: '', amountCollected: '' });
   const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
-  const [filterType, setFilterType] = useState<'all' | 'clinic' | 'home'>('all');
   const [filterStatus, setFilterStatus] = useState<'all' | SessionStatus>('all');
   const [filterLevel, setFilterLevel] = useState<'all' | TherapyLevel>('all');
   const [filterPatient, setFilterPatient] = useState('');
@@ -2100,7 +2338,7 @@ function SessionsView({
   };
 
   const filteredSessions = data.therapySessions
-    .filter((s) => filterType === 'all' || s.sessionType === filterType)
+    .filter((s) => s.sessionType === 'clinic')
     .filter((s) => filterStatus === 'all' || s.status === filterStatus)
     .filter((s) => filterLevel === 'all' || s.therapyLevel === filterLevel)
     .filter((s) => !filterPatient || s.patientId === filterPatient)
@@ -2206,7 +2444,7 @@ function SessionsView({
 
         <section className="panel">
           <div className="sessions-toolbar">
-            <PanelTitle title="Sessions by patient" subtitle="Grouped view — expand a patient to see all their sessions" />
+            <PanelTitle title="Clinic sessions by patient" subtitle="Home visits are managed in the Home Visits tab" />
             <div className="toolbar-actions">
               <button className="ghost-button accent" onClick={() => setShowRecordModal(true)}>
                 <ClipboardList size={16} /> Record walk-in
@@ -2229,11 +2467,6 @@ function SessionsView({
             <select value={filterPatient} onChange={(e) => setFilterPatient(e.target.value)}>
               <option value="">All patients</option>
               {data.patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <select value={filterType} onChange={(e) => setFilterType(e.target.value as typeof filterType)}>
-              <option value="all">All types</option>
-              <option value="clinic">Clinic</option>
-              <option value="home">Home visit</option>
             </select>
             <select value={filterLevel} onChange={(e) => setFilterLevel(e.target.value as typeof filterLevel)}>
               <option value="all">All levels</option>
@@ -2357,6 +2590,246 @@ function SessionsView({
         </section>
       </div>
     </>
+  );
+}
+
+// ─── Home Visits View (home-only scheduling + management) ─────────────────────
+
+function HomeVisitsView({
+  data, currentUser, preset, onAddSession, onUpdateSession, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
+}: {
+  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
+  currentUser: Profile;
+  preset: { patientId?: string; sessionType?: SessionType };
+  onAddSession: (session: Omit<TherapySession, 'id'>) => void;
+  onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onChangeStatus: (sessionId: string, status: SessionStatus) => void;
+  onDeleteSession: (sessionId: string) => void;
+  onOpenPatient: (patientId: string) => void;
+  onClearPreset: () => void;
+}) {
+  const homeSessions = data.therapySessions.filter((s) => s.sessionType === 'home');
+  const homePatientIds = new Set(homeSessions.map((s) => s.patientId));
+  const homePatients = data.patients.filter((p) => p.homeVisitDetails || homePatientIds.has(p.id) || p.id === preset.patientId);
+  const [patientId, setPatientId] = useState(preset.patientId ?? homePatients[0]?.id ?? '');
+  const [therapyType, setTherapyType] = useState('Home Visit');
+  const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>('basic');
+  const [startDate, setStartDate] = useState(todayStr);
+  const [startTime, setStartTime] = useState('09:00');
+  const [visitCount, setVisitCount] = useState(1);
+  const [freqDays, setFreqDays] = useState(1);
+  const [amount, setAmount] = useState('');
+  const [notes, setNotes] = useState('');
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [completionData, setCompletionData] = useState({ treatmentNotes: '', amountCollected: '' });
+
+  useEffect(() => {
+    if (preset.patientId) {
+      setPatientId(preset.patientId);
+      return;
+    }
+    if (!patientId && homePatients[0]) setPatientId(homePatients[0].id);
+  }, [homePatients, patientId, preset.patientId]);
+
+  const submitSchedule = (e: FormEvent) => {
+    e.preventDefault();
+    if (!patientId || !therapyType.trim()) return;
+    const count = Math.max(1, Math.min(visitCount, 60));
+    const gap = Math.max(1, freqDays);
+    for (let i = 0; i < count; i++) {
+      const d = new Date(`${startDate}T${startTime}`);
+      d.setDate(d.getDate() + i * gap);
+      onAddSession({
+        patientId,
+        clinicId: null,
+        scheduledAt: d.toISOString(),
+        therapyType: therapyType.trim(),
+        sessionType: 'home',
+        therapyLevel,
+        assignedStaffId: currentUser.id,
+        status: 'scheduled',
+        completedAt: null,
+        notes,
+        treatmentNotes: '',
+        amountCollected: amount ? parseFloat(amount) : null,
+      });
+    }
+  };
+
+  const submitCompletion = (e: FormEvent) => {
+    e.preventDefault();
+    if (!completingId) return;
+    onUpdateSession(completingId, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      treatmentNotes: completionData.treatmentNotes,
+      amountCollected: completionData.amountCollected ? parseFloat(completionData.amountCollected) : null,
+    });
+    setCompletingId(null);
+    setCompletionData({ treatmentNotes: '', amountCollected: '' });
+  };
+
+  const groups = Array.from(
+    homeSessions.reduce((map, session) => {
+      if (!map.has(session.patientId)) map.set(session.patientId, []);
+      map.get(session.patientId)!.push(session);
+      return map;
+    }, new Map<string, TherapySession[]>())
+  ).map(([id, sessions]) => {
+    const patient = data.patients.find((p) => p.id === id);
+    const sorted = [...sessions].sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+    return {
+      patient,
+      patientId: id,
+      sessions: sorted,
+      total: sessions.length,
+      scheduled: sessions.filter((s) => s.status === 'scheduled').length,
+      completed: sessions.filter((s) => s.status === 'completed').length,
+      missed: sessions.filter((s) => s.status === 'cancelled' || s.status === 'no_show').length,
+      next: sorted.find((s) => s.status === 'scheduled' && s.scheduledAt >= todayStr),
+    };
+  }).sort((a, b) => (a.patient?.name ?? '').localeCompare(b.patient?.name ?? ''));
+
+  return (
+    <div className="content-stack">
+      {completingId && (
+        <div className="modal-backdrop">
+          <form className="modal-panel form-grid" onSubmit={submitCompletion}>
+            <PanelTitle title="Complete home visit" subtitle="Record treatment notes and amount collected" />
+            <label>
+              Treatment notes
+              <textarea required value={completionData.treatmentNotes} onChange={(e) => setCompletionData({ ...completionData, treatmentNotes: e.target.value })} />
+            </label>
+            <label>
+              Amount collected (₹)
+              <input type="number" min="0" step="0.01" value={completionData.amountCollected} onChange={(e) => setCompletionData({ ...completionData, amountCollected: e.target.value })} />
+            </label>
+            <div className="button-row">
+              <button className="primary-button" type="submit"><Check size={15} /> Mark complete</button>
+              <button className="ghost-button" type="button" onClick={() => setCompletingId(null)}><X size={15} /> Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <section className="panel home-visit-scheduler">
+        <div className="toolbar">
+          <PanelTitle title="Schedule home visits" subtitle="Home visits use 30-minute slots from 9 AM to 6 PM and do not require clinic assignment" />
+          {preset.patientId && (
+            <button className="ghost-button" type="button" onClick={onClearPreset}>Clear patient preset</button>
+          )}
+        </div>
+        {homePatients.length === 0 ? (
+          <EmptyState message="Enable Home visit details on a patient record before scheduling home visits." />
+        ) : (
+          <form className="home-schedule-grid" onSubmit={submitSchedule}>
+            <label>
+              Patient
+              <select required value={patientId} onChange={(e) => setPatientId(e.target.value)}>
+                {homePatients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Therapy type
+              <input required value={therapyType} onChange={(e) => setTherapyType(e.target.value)} />
+            </label>
+            <label>
+              Level
+              <select value={therapyLevel} onChange={(e) => setTherapyLevel(e.target.value as TherapyLevel)}>
+                <option value="basic">Basic</option>
+                <option value="rehab">Rehab</option>
+                <option value="advance">Advance</option>
+              </select>
+            </label>
+            <label>
+              Start date
+              <input type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </label>
+            <label>
+              Time slot
+              <select value={startTime} onChange={(e) => setStartTime(e.target.value)}>
+                {Array.from(HOME_SLOTS).map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+              </select>
+            </label>
+            <label>
+              Number of visits
+              <input type="number" min="1" max="60" value={visitCount} onChange={(e) => setVisitCount(parseInt(e.target.value || '1', 10))} />
+            </label>
+            <label>
+              Repeat every (days)
+              <input type="number" min="1" value={freqDays} onChange={(e) => setFreqDays(parseInt(e.target.value || '1', 10))} />
+            </label>
+            <label>
+              Estimated amount (₹)
+              <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+            </label>
+            <label className="home-schedule-notes">
+              Notes
+              <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </label>
+            <div className="form-actions">
+              <button className="primary-button" type="submit"><Plus size={15} /> Schedule home visits</button>
+            </div>
+          </form>
+        )}
+      </section>
+
+      <section className="panel">
+        <PanelTitle title="Home visits by patient" subtitle={`${homeSessions.length} scheduled or recorded visits`} />
+        {groups.length === 0 ? (
+          <EmptyState message="No home visits scheduled yet" />
+        ) : (
+          <div className="patient-session-groups">
+            {groups.map(({ patient, patientId: groupPatientId, sessions, total, scheduled, completed, missed, next }) => (
+              <div key={groupPatientId} className="patient-session-group">
+                <button className="patient-group-header" type="button" onClick={() => patient && onOpenPatient(patient.id)}>
+                  <span className="patient-group-avatar">{(patient?.name ?? '?').charAt(0)}</span>
+                  <div className="patient-group-info">
+                    <strong>{patient?.name ?? 'Unknown patient'}</strong>
+                    <small>{next ? `Next: ${formatDateTime(next.scheduledAt)}` : 'No upcoming home visit'}</small>
+                  </div>
+                  <div className="patient-group-stats">
+                    <span className="pg-stat total"><Home size={12} />{total}</span>
+                    <span className="pg-stat scheduled"><Activity size={12} />{scheduled}</span>
+                    <span className="pg-stat completed"><Check size={12} />{completed}</span>
+                    {missed > 0 && <span className="pg-stat cancelled"><X size={12} />{missed}</span>}
+                  </div>
+                </button>
+                <div className="patient-group-sessions">
+                  {sessions.map((session) => (
+                    <div key={session.id} className="group-session-row">
+                      <div className="group-session-badges">
+                        <span className="badge badge-amber"><Home size={10} /> Home</span>
+                        <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
+                      </div>
+                      <div className="group-session-info">
+                        <strong>{session.therapyType}</strong>
+                        <small className="session-slot-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</small>
+                        {session.notes && <p className="clinical-note">{session.notes}</p>}
+                      </div>
+                      <div className="group-session-right">
+                        <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
+                        {session.amountCollected !== null && <span className="revenue-badge">{formatCurrency(session.amountCollected)}</span>}
+                      </div>
+                      <div className="group-session-actions">
+                        {session.status === 'scheduled' && (
+                          <>
+                            <button className="primary-button icon-only" title="Mark complete" onClick={() => { setCompletingId(session.id); setCompletionData({ treatmentNotes: session.treatmentNotes ?? '', amountCollected: session.amountCollected?.toString() ?? '' }); }}><Check size={13} /></button>
+                            <button className="ghost-button icon-only" title="No show" onClick={() => onChangeStatus(session.id, 'no_show')}>NS</button>
+                            <button className="ghost-button icon-only" title="Cancel" onClick={() => onChangeStatus(session.id, 'cancelled')}><X size={13} /></button>
+                          </>
+                        )}
+                        <button className="danger-button icon-only" title="Delete" onClick={() => onDeleteSession(session.id)}><Trash2 size={13} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -2523,7 +2996,6 @@ function RecordSessionModal({
     patientId: '',
     clinicId: data.clinics[0]?.id ?? '',
     therapyType: '',
-    sessionType: 'clinic' as SessionType,
     therapyLevel: 'basic' as TherapyLevel,
     scheduledAt: nowLocal,
     status: 'completed' as SessionStatus,
@@ -2541,7 +3013,7 @@ function RecordSessionModal({
       patientId:        form.patientId,
       clinicId:         form.clinicId,
       therapyType:      form.therapyType,
-      sessionType:      form.sessionType,
+      sessionType:      'clinic',
       therapyLevel:     form.therapyLevel,
       scheduledAt:      form.scheduledAt,
       status:           form.status,
@@ -2571,7 +3043,7 @@ function RecordSessionModal({
               Patient <span className="required">*</span>
               <select required value={form.patientId} onChange={(e) => set('patientId', e.target.value)}>
                 <option value="">— select patient —</option>
-                {data.patients.map((p) => (
+                {data.patients.filter((p) => p.clinicId !== null).map((p) => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
@@ -2594,21 +3066,10 @@ function RecordSessionModal({
               />
             </label>
 
-            <label>
-              Session type
-              <div className="toggle-row">
-                {(['clinic', 'home'] as SessionType[]).map((t) => (
-                  <button
-                    key={t} type="button"
-                    className={`toggle-btn ${form.sessionType === t ? 'active' : ''}`}
-                    onClick={() => set('sessionType', t)}
-                  >
-                    {t === 'clinic' ? <Stethoscope size={14} /> : <Home size={14} />}
-                    {t === 'clinic' ? 'Clinic' : 'Home visit'}
-                  </button>
-                ))}
-              </div>
-            </label>
+            <div className="home-no-clinic-note">
+              <Stethoscope size={15} />
+              Clinic walk-in session
+            </div>
 
             <label>
               Therapy level
@@ -2695,8 +3156,9 @@ function ScheduleNewPage({
   onBack: () => void;
   onClearPreset: () => void;
 }) {
-  const [patientId, setPatientId] = useState(preset.patientId ?? data.patients[0]?.id ?? '');
-  const [sessionType, setSessionType] = useState<SessionType>(preset.sessionType ?? 'clinic');
+  const clinicPatients = data.patients.filter((p) => p.clinicId !== null);
+  const [patientId, setPatientId] = useState(preset.patientId ?? clinicPatients[0]?.id ?? '');
+  const sessionType: SessionType = 'clinic';
   const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>('basic');
   const [therapyType, setTherapyType] = useState('');
   const [dualTherapy, setDualTherapy] = useState(false);
@@ -2721,8 +3183,7 @@ function ScheduleNewPage({
   // Sync preset
   useEffect(() => {
     if (preset.patientId) setPatientId(preset.patientId);
-    if (preset.sessionType) setSessionType(preset.sessionType);
-  }, [preset.patientId, preset.sessionType]);
+  }, [preset.patientId]);
 
   const previewDates = useMemo(
     () => generateDates(mode, startDate, startTime, countConfig, rangeConfig),
@@ -2779,7 +3240,7 @@ function ScheduleNewPage({
         {preset.patientId && (
           <div className="preset-notice">
             Pre-filled for {selectedPatient?.name ?? 'patient'}.{' '}
-            <button type="button" className="ghost-link" onClick={() => { onClearPreset(); setPatientId(data.patients[0]?.id ?? ''); }}>
+            <button type="button" className="ghost-link" onClick={() => { onClearPreset(); setPatientId(clinicPatients[0]?.id ?? ''); }}>
               Clear
             </button>
           </div>
@@ -2798,24 +3259,16 @@ function ScheduleNewPage({
         <form className="panel form-grid" onSubmit={handleSubmit}>
           <PanelTitle title="Schedule sessions" subtitle="Set up single or bulk recurring sessions" />
 
-          {/* Session type */}
-          <label>
-            Session type
-            <div className="segmented-small">
-              <button type="button" className={sessionType === 'clinic' ? 'active' : ''} onClick={() => setSessionType('clinic')}>
-                <Stethoscope size={14} /> Clinic
-              </button>
-              <button type="button" className={sessionType === 'home' ? 'active' : ''} onClick={() => setSessionType('home')}>
-                <Home size={14} /> Home visit
-              </button>
-            </div>
-          </label>
+          <div className="home-no-clinic-note">
+            <Stethoscope size={15} />
+            Clinic scheduling only — home visits are scheduled from the Home Visits tab
+          </div>
 
           {/* Patient */}
           <label>
             Patient
             <select required value={patientId} onChange={(e) => setPatientId(e.target.value)}>
-              {data.patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {clinicPatients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
 
@@ -3055,8 +3508,8 @@ function ScheduleNewPage({
             <>
               <div className="preview-summary">
                 <span className="badge badge-teal">
-                  {sessionType === 'home' ? <Home size={12} /> : <Stethoscope size={12} />}
-                  {sessionType === 'home' ? 'Home visit' : 'Clinic session'}
+                  <Stethoscope size={12} />
+                  Clinic session
                 </span>
                 {selectedPatient && <span className="badge badge-slate">{selectedPatient.name}</span>}
                 {therapyType && <span className="badge badge-blue">{therapyType}</span>}
@@ -3119,46 +3572,70 @@ function ScheduleNewPage({
 
 // ─── Calendar View ────────────────────────────────────────────────────────────
 
+// ── Time slot helpers ─────────────────────────────────────────────────────────
+function genSlots(startH: number, endH: number): string[] {
+  const out: string[] = [];
+  for (let h = startH; h < endH; h++) {
+    out.push(`${String(h).padStart(2, '0')}:00`);
+    out.push(`${String(h).padStart(2, '0')}:30`);
+  }
+  return out;
+}
+const HOME_SLOTS   = new Set(genSlots(9, 18));  // 09:00 – 17:30
+const CLINIC_SLOTS = new Set(genSlots(9, 21));  // 09:00 – 20:30
+const ALL_DAY_SLOTS = genSlots(9, 21);           // full axis for display
+
 function CalendarView({
-  data, allClinics, currentUser, onOpenPatient,
+  data, allClinics, currentUser, onOpenPatient, onAddSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
   currentUser: Profile;
   onOpenPatient: (patientId: string) => void;
+  onAddSession: (session: Omit<TherapySession, 'id'>) => void;
 }) {
   const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth()); // 0-indexed
+  const [view, setView]         = useState<'month' | 'day'>('month');
+  const [year, setYear]         = useState(now.getFullYear());
+  const [month, setMonth]       = useState(now.getMonth()); // 0-indexed
+  const [selectedDate, setSelectedDate] = useState(todayStr);
   const [selectedClinicId, setSelectedClinicId] = useState(
     currentUser.role === 'staff' && currentUser.clinicId ? currentUser.clinicId : 'all'
   );
-  const [popover, setPopover] = useState<TherapySession | null>(null);
+  const [popover, setPopover]   = useState<TherapySession | null>(null);
+
+  // Quick-schedule booking state
+  const [booking, setBooking]   = useState<{ date: string; time: string; type: SessionType; clinicId: string } | null>(null);
+  const [bkPatient, setBkPatient]   = useState('');
+  const [bkTherapy, setBkTherapy]   = useState('');
+  const [bkLevel, setBkLevel]       = useState<TherapyLevel>('basic');
+  const [bkClinic, setBkClinic]     = useState('');
 
   const clinicsForSelector = currentUser.role === 'admin' ? allClinics : data.clinics;
 
-  const prevMonth = () => {
-    if (month === 0) { setMonth(11); setYear((y) => y - 1); }
-    else setMonth((m) => m - 1);
-  };
-  const nextMonth = () => {
-    if (month === 11) { setMonth(0); setYear((y) => y + 1); }
-    else setMonth((m) => m + 1);
-  };
-
+  // ── Month navigation ──
+  const prevMonth = () => { if (month === 0) { setMonth(11); setYear((y) => y - 1); } else setMonth((m) => m - 1); };
+  const nextMonth = () => { if (month === 11) { setMonth(0); setYear((y) => y + 1); } else setMonth((m) => m + 1); };
   const monthName = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month));
 
-  // Build calendar grid
-  const firstDayOfMonth = new Date(year, month, 1).getDay(); // 0=Sun
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const totalCells = Math.ceil((firstDayOfMonth + daysInMonth) / 7) * 7;
+  // ── Day navigation ──
+  const shiftDay = (delta: number) => {
+    const d = new Date(selectedDate + 'T12:00');
+    d.setDate(d.getDate() + delta);
+    setSelectedDate(d.toISOString().slice(0, 10));
+  };
+  const dayLabel = new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    .format(new Date(selectedDate + 'T12:00'));
 
+  // ── Grid cells ──
+  const firstDayOfMonth = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const totalCells  = Math.ceil((firstDayOfMonth + daysInMonth) / 7) * 7;
   const cells: Array<{ date: number | null; dateStr: string | null }> = [];
   for (let i = 0; i < totalCells; i++) {
     const dayNum = i - firstDayOfMonth + 1;
-    if (dayNum < 1 || dayNum > daysInMonth) {
-      cells.push({ date: null, dateStr: null });
-    } else {
+    if (dayNum < 1 || dayNum > daysInMonth) { cells.push({ date: null, dateStr: null }); }
+    else {
       const mm = String(month + 1).padStart(2, '0');
       const dd = String(dayNum).padStart(2, '0');
       cells.push({ date: dayNum, dateStr: `${year}-${mm}-${dd}` });
@@ -3166,212 +3643,346 @@ function CalendarView({
   }
 
   const filteredSessions = data.therapySessions.filter((s) =>
-    selectedClinicId === 'all' || s.clinicId === selectedClinicId
+    s.sessionType === 'clinic' && (selectedClinicId === 'all' || s.clinicId === selectedClinicId)
   );
-
-  const sessionsByDate = (dateStr: string) =>
-    filteredSessions.filter((s) => s.scheduledAt.startsWith(dateStr));
-
-  const todayDateStr = todayStr;
+  const sessionsByDate  = (ds: string) => filteredSessions.filter((s) => s.scheduledAt.startsWith(ds));
+  const daySessions     = filteredSessions.filter((s) => s.scheduledAt.startsWith(selectedDate));
+  const sessionAt       = (time: string, type: SessionType) =>
+    daySessions.find((s) => s.scheduledAt.slice(11, 16) === time && s.sessionType === type);
+  const todayDateStr    = todayStr;
 
   // Monthly stats
-  const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const monthStr       = `${year}-${String(month + 1).padStart(2, '0')}`;
   const monthSessions  = filteredSessions.filter((s) => s.scheduledAt.startsWith(monthStr));
   const monthScheduled = monthSessions.filter((s) => s.status === 'scheduled').length;
   const monthCompleted = monthSessions.filter((s) => s.status === 'completed').length;
-  const monthHome      = monthSessions.filter((s) => s.sessionType === 'home').length;
   const monthRevenue   = monthSessions.filter((s) => s.status === 'completed' && s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
 
-  return (
-    <div className="content-stack">
+  // ── Open quick-booking for a slot ──
+  const handleBookSlot = (time: string) => {
+    const cId = selectedClinicId !== 'all'
+      ? selectedClinicId
+      : (data.clinics[0]?.id ?? '');
+    setBkPatient(data.patients.find((p) => p.clinicId !== null)?.id ?? '');
+    setBkTherapy('');
+    setBkLevel('basic');
+    setBkClinic(cId);
+    setBooking({ date: selectedDate, time, type: 'clinic', clinicId: cId });
+  };
 
-      {/* ── Session detail popover ── */}
-      {popover && (() => {
-        const patient  = data.patients.find((p) => p.id === popover.patientId);
-        const clinic   = allClinics.find((c) => c.id === popover.clinicId);
-        const isHome   = popover.sessionType === 'home';
-        const time     = popover.scheduledAt.slice(11, 16);
-        const dateDisp = new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
-          .format(new Date(popover.scheduledAt.slice(0, 10) + 'T12:00'));
-        return (
-          <div className="modal-backdrop" onClick={() => setPopover(null)}>
-            <div className="cal-popover" onClick={(e) => e.stopPropagation()}>
-              {/* Coloured header strip */}
-              <div className={`cal-popover-header ${isHome ? 'home' : 'clinic'} status-${popover.status}`}>
-                <div className="cal-popover-title-row">
-                  <span className="cal-popover-icon">{isHome ? <Home size={16} /> : <Stethoscope size={16} />}</span>
-                  <div>
-                    <h3 className="cal-popover-title">{popover.therapyType}</h3>
-                    <p className="cal-popover-sub">{dateDisp} · {time}</p>
-                  </div>
-                </div>
-                <button className="cal-popover-close" onClick={() => setPopover(null)}><X size={16} /></button>
-              </div>
+  const submitBooking = (e: FormEvent) => {
+    e.preventDefault();
+    if (!booking || !bkPatient || !bkTherapy) return;
+    onAddSession({
+      patientId:       bkPatient,
+      clinicId:        bkClinic || booking.clinicId,
+      scheduledAt:     `${booking.date}T${booking.time}:00.000Z`,
+      therapyType:     bkTherapy,
+      sessionType:     booking.type,
+      therapyLevel:    bkLevel,
+      assignedStaffId: currentUser.id,
+      status:          'scheduled',
+      completedAt:     null,
+      notes:           '',
+      treatmentNotes:  '',
+      amountCollected: null,
+    });
+    setBooking(null);
+  };
 
-              {/* Status + level strip */}
-              <div className="cal-popover-badges">
-                <span className={`status ${popover.status}`}>{statusLabel(popover.status)}</span>
-                <span className={`therapy-level-badge ${popover.therapyLevel ?? 'basic'}`}>{popover.therapyLevel ?? 'basic'}</span>
-                <span className={`badge ${isHome ? 'badge-amber' : 'badge-teal'}`}>
-                  {isHome ? <Home size={10} /> : <Stethoscope size={10} />}
-                  {isHome ? 'Home visit' : 'Clinic'}
-                </span>
-              </div>
-
-              {/* Detail rows */}
-              <div className="cal-popover-rows">
-                <div className="cal-popover-row">
-                  <Users size={14} />
-                  <div>
-                    <span className="cal-row-label">Patient</span>
-                    <button className="ghost-link cal-row-value"
-                      onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
-                      {patient?.name ?? 'Unknown'} ↗
-                    </button>
-                  </div>
-                </div>
-                <div className="cal-popover-row">
-                  <Building2 size={14} />
-                  <div>
-                    <span className="cal-row-label">Clinic</span>
-                    <span className="cal-row-value">{clinic?.name ?? '—'}</span>
-                  </div>
-                </div>
-                <div className="cal-popover-row">
-                  <Clock size={14} />
-                  <div>
-                    <span className="cal-row-label">Date &amp; time</span>
-                    <span className="cal-row-value">{dateDisp} at {time}</span>
-                  </div>
-                </div>
-                {popover.amountCollected !== null && (
-                  <div className="cal-popover-row">
-                    <DollarSign size={14} />
-                    <div>
-                      <span className="cal-row-label">Amount</span>
-                      <span className="cal-row-value">{formatCurrency(popover.amountCollected)}</span>
-                    </div>
-                  </div>
-                )}
-                {popover.treatmentNotes && (
-                  <div className="cal-popover-row">
-                    <FileText size={14} />
-                    <div>
-                      <span className="cal-row-label">Treatment notes</span>
-                      <span className="cal-row-value">{popover.treatmentNotes}</span>
-                    </div>
-                  </div>
-                )}
-                {popover.notes && (
-                  <div className="cal-popover-row">
-                    <FileText size={14} />
-                    <div>
-                      <span className="cal-row-label">Notes</span>
-                      <span className="cal-row-value">{popover.notes}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Actions */}
-              <div className="cal-popover-actions">
-                <button className="primary-button" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
-                  <Users size={14} /> View patient
-                </button>
-                <button className="ghost-button" onClick={() => setPopover(null)}>
-                  Close
-                </button>
+  // ── Shared session detail popover renderer ──
+  const renderPopover = () => {
+    if (!popover) return null;
+    const patient  = data.patients.find((p) => p.id === popover.patientId);
+    const clinic   = allClinics.find((c) => c.id === popover.clinicId);
+    const isHome   = popover.sessionType === 'home';
+    const time     = popover.scheduledAt.slice(11, 16);
+    const dateDisp = new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+      .format(new Date(popover.scheduledAt.slice(0, 10) + 'T12:00'));
+    return (
+      <div className="modal-backdrop" onClick={() => setPopover(null)}>
+        <div className="cal-popover" onClick={(e) => e.stopPropagation()}>
+          <div className={`cal-popover-header ${isHome ? 'home' : 'clinic'} status-${popover.status}`}>
+            <div className="cal-popover-title-row">
+              <span className="cal-popover-icon">{isHome ? <Home size={16} /> : <Stethoscope size={16} />}</span>
+              <div>
+                <h3 className="cal-popover-title">{popover.therapyType}</h3>
+                <p className="cal-popover-sub">{dateDisp} · {time}</p>
               </div>
             </div>
+            <button className="cal-popover-close" onClick={() => setPopover(null)}><X size={16} /></button>
           </div>
-        );
-      })()}
+          <div className="cal-popover-badges">
+            <span className={`status ${popover.status}`}>{statusLabel(popover.status)}</span>
+            <span className={`therapy-level-badge ${popover.therapyLevel ?? 'basic'}`}>{popover.therapyLevel ?? 'basic'}</span>
+            <span className={`badge ${isHome ? 'badge-amber' : 'badge-teal'}`}>
+              {isHome ? <Home size={10} /> : <Stethoscope size={10} />}{isHome ? 'Home visit' : 'Clinic'}
+            </span>
+          </div>
+          <div className="cal-popover-rows">
+            <div className="cal-popover-row"><Users size={14} /><div>
+              <span className="cal-row-label">Patient</span>
+              <button className="ghost-link cal-row-value" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
+                {patient?.name ?? 'Unknown'} ↗
+              </button>
+            </div></div>
+            <div className="cal-popover-row"><Building2 size={14} /><div>
+              <span className="cal-row-label">Clinic</span>
+              <span className="cal-row-value">{clinic?.name ?? '—'}</span>
+            </div></div>
+            <div className="cal-popover-row"><Clock size={14} /><div>
+              <span className="cal-row-label">Date &amp; time</span>
+              <span className="cal-row-value">{dateDisp} at {time}</span>
+            </div></div>
+            {popover.amountCollected !== null && (
+              <div className="cal-popover-row"><DollarSign size={14} /><div>
+                <span className="cal-row-label">Amount</span>
+                <span className="cal-row-value">{formatCurrency(popover.amountCollected)}</span>
+              </div></div>
+            )}
+            {popover.treatmentNotes && (
+              <div className="cal-popover-row"><FileText size={14} /><div>
+                <span className="cal-row-label">Treatment notes</span>
+                <span className="cal-row-value">{popover.treatmentNotes}</span>
+              </div></div>
+            )}
+          </div>
+          <div className="cal-popover-actions">
+            <button className="primary-button" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
+              <Users size={14} /> View patient
+            </button>
+            <button className="ghost-button" onClick={() => setPopover(null)}>Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="content-stack">
+      {renderPopover()}
+
+      {/* ── Quick-schedule modal ── */}
+      {booking && (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setBooking(null); }}>
+          <form className="modal-panel" style={{ maxWidth: 420 }} onSubmit={submitBooking}>
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">Book slot</h3>
+                <p className="modal-sub">
+                  Clinic · {booking.date} at {booking.time}
+                </p>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setBooking(null)}><X size={18} /></button>
+            </div>
+
+            <label>Patient <span className="required">*</span>
+              <select required value={bkPatient} onChange={(e) => setBkPatient(e.target.value)}>
+                <option value="">— select patient —</option>
+                {data.patients.filter((p) => p.clinicId !== null).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+
+            <label>Therapy type <span className="required">*</span>
+              <input required value={bkTherapy} onChange={(e) => setBkTherapy(e.target.value)} placeholder="e.g. Physiotherapy, Rehab" />
+            </label>
+
+            <label>Therapy level
+              <select value={bkLevel} onChange={(e) => setBkLevel(e.target.value as TherapyLevel)}>
+                <option value="basic">Basic</option>
+                <option value="rehab">Rehab</option>
+                <option value="advance">Advance</option>
+              </select>
+            </label>
+
+            {currentUser.role === 'admin' && (
+              <label>Clinic
+                <select value={bkClinic} onChange={(e) => setBkClinic(e.target.value)}>
+                  {data.clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </label>
+            )}
+
+            <div className="form-actions">
+              <button type="submit" className="primary-button"><CalendarDays size={14} /> Schedule</button>
+              <button type="button" className="ghost-button" onClick={() => setBooking(null)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* ── Toolbar ── */}
       <div className="calendar-toolbar">
         <div className="cal-nav-group">
-          <button className="ghost-button icon-only" onClick={prevMonth}><ChevronLeft size={18} /></button>
-          <h2 className="calendar-month-title">{monthName}</h2>
-          <button className="ghost-button icon-only" onClick={nextMonth}><ChevronRight size={18} /></button>
-          <button
-            className="ghost-button cal-today-btn"
-            onClick={() => { setMonth(now.getMonth()); setYear(now.getFullYear()); }}
-          >
-            Today
-          </button>
+          {view === 'month' ? (
+            <>
+              <button className="ghost-button icon-only" onClick={prevMonth}><ChevronLeft size={18} /></button>
+              <h2 className="calendar-month-title">{monthName}</h2>
+              <button className="ghost-button icon-only" onClick={nextMonth}><ChevronRight size={18} /></button>
+              <button className="ghost-button cal-today-btn"
+                onClick={() => { setMonth(now.getMonth()); setYear(now.getFullYear()); }}>Today</button>
+            </>
+          ) : (
+            <>
+              <button className="ghost-button icon-only" onClick={() => shiftDay(-1)}><ChevronLeft size={18} /></button>
+              <h2 className="calendar-month-title" style={{ fontSize: '1rem' }}>{dayLabel}</h2>
+              <button className="ghost-button icon-only" onClick={() => shiftDay(1)}><ChevronRight size={18} /></button>
+              <button className="ghost-button cal-today-btn"
+                onClick={() => setSelectedDate(todayStr)}>Today</button>
+            </>
+          )}
         </div>
+
         <div className="cal-month-stats">
           <span className="cal-stat scheduled"><Activity size={11} />{monthScheduled} scheduled</span>
           <span className="cal-stat completed"><Check size={11} />{monthCompleted} done</span>
-          <span className="cal-stat home"><Home size={11} />{monthHome} home</span>
           {monthRevenue > 0 && <span className="cal-stat revenue"><DollarSign size={11} />{formatCurrency(monthRevenue)}</span>}
         </div>
-        <select
-          className="clinic-selector"
-          value={selectedClinicId}
-          onChange={(e) => setSelectedClinicId(e.target.value)}
-        >
-          {currentUser.role === 'admin' && <option value="all">All clinics</option>}
-          {clinicsForSelector.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+
+        <div className="cal-toolbar-right">
+          {/* View toggle */}
+          <div className="view-toggle">
+            <button
+              className={`view-toggle-btn${view === 'month' ? ' active' : ''}`}
+              onClick={() => setView('month')}
+            ><CalendarDays size={14} /> Month</button>
+            <button
+              className={`view-toggle-btn${view === 'day' ? ' active' : ''}`}
+              onClick={() => setView('day')}
+            ><Clock size={14} /> Day</button>
+          </div>
+          <select className="clinic-selector" value={selectedClinicId}
+            onChange={(e) => setSelectedClinicId(e.target.value)}>
+            {currentUser.role === 'admin' && <option value="all">All clinics</option>}
+            {clinicsForSelector.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
       </div>
 
-      {/* ── Calendar grid ── */}
-      <section className="calendar-grid-wrapper panel">
-        <div className="calendar-header-row">
-          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, di) => (
-            <div key={d} className={`calendar-dow ${di === 0 || di === 6 ? 'weekend' : ''}`}>{d}</div>
-          ))}
-        </div>
-        <div className="calendar-grid">
-          {cells.map((cell, i) => {
-            const sessions = cell.dateStr ? sessionsByDate(cell.dateStr) : [];
-            const isToday   = cell.dateStr === todayDateStr;
-            const isWeekend = i % 7 === 0 || i % 7 === 6;
-            const hasSessions = sessions.length > 0;
-            return (
-              <div
-                key={i}
-                className={`calendar-cell${!cell.date ? ' empty' : ''}${isToday ? ' today' : ''}${isWeekend ? ' weekend' : ''}${hasSessions ? ' has-sessions' : ''}`}
-              >
-                {cell.date !== null && (
-                  <>
-                    <span className="calendar-date">{cell.date}</span>
-                    <div className="calendar-sessions">
-                      {sessions.slice(0, 3).map((s) => (
-                        <button
-                          key={s.id}
-                          className={`cal-session-chip ${s.sessionType === 'home' ? 'home' : 'clinic'} level-${s.therapyLevel ?? 'basic'} status-${s.status}`}
-                          onClick={() => setPopover(s)}
-                          title={`${s.therapyType} · ${s.scheduledAt.slice(11, 16)} [${s.therapyLevel ?? 'basic'}]`}
-                        >
-                          {s.sessionType === 'home' ? <Home size={9} /> : <Stethoscope size={9} />}
-                          <span className="chip-time">{s.scheduledAt.slice(11, 16)}</span>
-                          <span className="chip-label">{s.therapyType.slice(0, 12)}</span>
-                        </button>
-                      ))}
-                      {sessions.length > 3 && (
-                        <span className="cal-more">+{sessions.length - 3} more</span>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
+      {/* ══ MONTH VIEW ══ */}
+      {view === 'month' && (
+        <>
+          <section className="calendar-grid-wrapper panel">
+            <div className="calendar-header-row">
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, di) => (
+                <div key={d} className={`calendar-dow ${di === 0 || di === 6 ? 'weekend' : ''}`}>{d}</div>
+              ))}
+            </div>
+            <div className="calendar-grid">
+              {cells.map((cell, i) => {
+                const sessions   = cell.dateStr ? sessionsByDate(cell.dateStr) : [];
+                const isToday    = cell.dateStr === todayDateStr;
+                const isWeekend  = i % 7 === 0 || i % 7 === 6;
+                const hasSessions = sessions.length > 0;
+                return (
+                  <div key={i}
+                    className={`calendar-cell${!cell.date ? ' empty' : ''}${isToday ? ' today' : ''}${isWeekend ? ' weekend' : ''}${hasSessions ? ' has-sessions' : ''}`}
+                  >
+                    {cell.date !== null && (
+                      <>
+                        <div className="calendar-date-row">
+                          <span className="calendar-date">{cell.date}</span>
+                          {cell.dateStr && (
+                            <button className="day-view-link" title="Open day view"
+                              onClick={() => { setSelectedDate(cell.dateStr!); setView('day'); }}>
+                              <Clock size={11} />
+                            </button>
+                          )}
+                        </div>
+                        <div className="calendar-sessions">
+                          {sessions.slice(0, 3).map((s) => (
+                            <button key={s.id}
+                              className={`cal-session-chip ${s.sessionType === 'home' ? 'home' : 'clinic'} level-${s.therapyLevel ?? 'basic'} status-${s.status}`}
+                              onClick={() => setPopover(s)}
+                              title={`${s.therapyType} · ${s.scheduledAt.slice(11, 16)} [${s.therapyLevel ?? 'basic'}]`}
+                            >
+                              {s.sessionType === 'home' ? <Home size={9} /> : <Stethoscope size={9} />}
+                              <span className="chip-time">{s.scheduledAt.slice(11, 16)}</span>
+                              <span className="chip-label">{s.therapyType.slice(0, 12)}</span>
+                            </button>
+                          ))}
+                          {sessions.length > 3 && (
+                            <button className="cal-more"
+                              onClick={() => { setSelectedDate(cell.dateStr!); setView('day'); }}>
+                              +{sessions.length - 3} more
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
 
-      {/* ── Legend ── */}
-      <div className="calendar-legend">
-        <span className="legend-item"><span className="legend-dot teal" />Clinic · scheduled</span>
-        <span className="legend-item"><span className="legend-dot amber" />Home visit</span>
-        <span className="legend-item"><span className="legend-dot green" />Completed</span>
-        <span className="legend-item"><span className="legend-dot coral" />Cancelled / No-show</span>
-        <span className="legend-item"><span className="legend-bar rehab" />Rehab level</span>
-        <span className="legend-item"><span className="legend-bar advance" />Advance level</span>
-      </div>
+          <div className="calendar-legend">
+            <span className="legend-item"><span className="legend-dot teal" />Clinic · scheduled</span>
+            <span className="legend-item"><span className="legend-dot green" />Completed</span>
+            <span className="legend-item"><span className="legend-dot coral" />Cancelled / No-show</span>
+            <span className="legend-item"><span className="legend-bar rehab" />Rehab level</span>
+            <span className="legend-item"><span className="legend-bar advance" />Advance level</span>
+          </div>
+        </>
+      )}
+
+      {/* ══ DAY VIEW ══ */}
+      {view === 'day' && (
+        <div className="panel day-view-panel">
+          {/* Column headers */}
+          <div className="day-view-header clinic-only">
+            <div className="day-time-gutter" />
+            <div className="day-col-header clinic-col">
+              <Stethoscope size={14} />
+              <span>Clinic Sessions</span>
+              <small>9:00 AM – 9:00 PM</small>
+            </div>
+          </div>
+
+          {/* Time slot rows */}
+          <div className="day-view-grid">
+            {ALL_DAY_SLOTS.map((time) => {
+              const clinicSession = sessionAt(time, 'clinic');
+              const isHour        = time.endsWith(':00');
+              return (
+                <div key={time} className={`day-slot-row clinic-only${isHour ? ' hour-boundary' : ''}`}>
+                  {/* Time label */}
+                  <div className="day-time-label">
+                    {isHour && (
+                      <span>{time.startsWith('0') ? time.replace(/^0/, '') : time}</span>
+                    )}
+                  </div>
+
+                  {/* Clinic column */}
+                  <div className="day-slot">
+                    {clinicSession ? (
+                      <button
+                        className={`day-slot-booked clinic level-${clinicSession.therapyLevel ?? 'basic'} status-${clinicSession.status}`}
+                        onClick={() => setPopover(clinicSession)}
+                      >
+                        <div className="slot-booked-top">
+                          <span className="slot-patient">{data.patients.find((p) => p.id === clinicSession.patientId)?.name ?? '—'}</span>
+                          <span className={`therapy-level-badge sm ${clinicSession.therapyLevel ?? 'basic'}`}>{clinicSession.therapyLevel ?? 'basic'}</span>
+                        </div>
+                        <div className="slot-booked-bottom">
+                          <span className="slot-therapy">{clinicSession.therapyType}</span>
+                          <span className={`status sm ${clinicSession.status}`}>{statusLabel(clinicSession.status)}</span>
+                        </div>
+                        <span className="slot-lock-icon"><Lock size={10} /></span>
+                      </button>
+                    ) : (
+                      <button className="day-slot-empty" onClick={() => handleBookSlot(time)}>
+                        <Plus size={12} /><span>Add</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3878,18 +4489,20 @@ function SessionRow({
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function clinicName(clinics: Clinic[], clinicId: string | null | undefined) {
-  if (!clinicId) return 'All clinics';
+  if (!clinicId) return 'Home visit';
   return clinics.find((c) => c.id === clinicId)?.name ?? 'Unknown clinic';
 }
 
 function pageTitle(page: Page) {
   const titles: Record<Page, string> = {
     dashboard: 'Dashboard',
+    homeDashboard: 'Home Dashboard',
     patients: 'Patient records',
     patientEntry: 'Add patient',
     patientDetail: 'Patient details',
     sessions: 'Sessions',
     scheduleNew: 'Schedule sessions',
+    homeVisits: 'Home Visits',
     calendar: 'Clinic calendar',
     clinics: 'Clinics',
     staff: 'Staff access',

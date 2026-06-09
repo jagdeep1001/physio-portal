@@ -34,12 +34,14 @@ type ProfileRow = {
 
 type PatientRow = {
   id: string;
-  clinic_id: string;
+  clinic_id: string | null;
   name: string;
   phone: string;
   date_of_birth: string;
   gender: Patient['gender'];
   address: string;
+  signs: string | null;
+  symptoms: string | null;
   diagnosis: string;
   referral_source: string;
   emergency_contact: string;
@@ -54,7 +56,7 @@ type PatientRow = {
 type TherapySessionRow = {
   id: string;
   patient_id: string;
-  clinic_id: string;
+  clinic_id: string | null;
   scheduled_at: string;
   therapy_type: string;
   session_type: TherapySession['sessionType'];
@@ -95,6 +97,8 @@ export function mapPatient(row: PatientRow): Patient {
     dateOfBirth: row.date_of_birth ?? '',
     gender: row.gender,
     address: row.address ?? '',
+    signs:            row.signs    ?? '',
+    symptoms:         row.symptoms ?? '',
     diagnosis: row.diagnosis ?? '',
     referralSource: row.referral_source ?? '',
     emergencyContact: row.emergency_contact ?? '',
@@ -107,6 +111,7 @@ export function mapPatient(row: PatientRow): Patient {
       ? {
           ...row.home_visit_details,
           caregiverPhone:   row.home_visit_details.caregiverPhone   ?? '',
+          homeVisitStartDate: row.home_visit_details.homeVisitStartDate ?? '',
           homeSessionLog:   row.home_visit_details.homeSessionLog   ?? [],
           homeSessionNotes: row.home_visit_details.homeSessionNotes ?? {},
         }
@@ -177,6 +182,8 @@ export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
   date_of_birth:      patient.dateOfBirth || null,
   gender:             patient.gender,
   address:            patient.address,
+  signs:              patient.signs ?? '',
+  symptoms:           patient.symptoms ?? '',
   diagnosis:          patient.diagnosis,
   referral_source:    patient.referralSource,
   emergency_contact:  patient.emergencyContact,
@@ -200,7 +207,7 @@ export const toProfileRow = (profile: Omit<Profile, 'id'> & { password?: string 
 
 export const toTherapySessionRow = (session: Omit<TherapySession, 'id'>) => ({
   patient_id:        session.patientId,
-  clinic_id:         session.clinicId,
+  clinic_id:         session.clinicId || null,
   scheduled_at:      session.scheduledAt,
   therapy_type:      session.therapyType,
   session_type:      session.sessionType,

@@ -55,7 +55,7 @@ create table if not exists profiles (
 -- ── patients ───────────────────────────────────────────────
 create table if not exists patients (
   id                 uuid primary key default gen_random_uuid(),
-  clinic_id          uuid not null references clinics(id) on delete cascade,
+  clinic_id          uuid references clinics(id) on delete set null,
   name               text not null,
   phone              text not null default '',
   date_of_birth      date,
@@ -65,6 +65,8 @@ create table if not exists patients (
   referral_source    text not null default '',
   emergency_contact  text not null default '',
   notes              text not null default '',
+  signs              text not null default '',
+  symptoms           text not null default '',
   complications      text not null default '',
   surgeries          text not null default '',
   active             boolean not null default true,
@@ -76,7 +78,7 @@ create table if not exists patients (
 create table if not exists therapy_sessions (
   id                uuid primary key default gen_random_uuid(),
   patient_id        uuid not null references patients(id) on delete cascade,
-  clinic_id         uuid not null references clinics(id) on delete cascade,
+  clinic_id         uuid references clinics(id) on delete set null,
   scheduled_at      timestamptz not null,
   therapy_type      text not null default '',
   session_type      session_type not null default 'clinic',
@@ -132,3 +134,11 @@ values (
   'active'
 )
 on conflict (email) do nothing;
+
+-- ── Add signs/symptoms columns to existing DB (safe, idempotent) ────────────
+alter table patients add column if not exists signs     text not null default '';
+alter table patients add column if not exists symptoms  text not null default '';
+
+-- ── Allow home-visit patients/sessions without clinic assignment ────────────
+alter table patients alter column clinic_id drop not null;
+alter table therapy_sessions alter column clinic_id drop not null;

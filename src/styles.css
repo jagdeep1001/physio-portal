@@ -1485,6 +1485,17 @@ textarea { min-height: 76px; resize: vertical; }
 .assistant-card strong { font-size: 0.8rem; color: var(--ink); line-height: 1.3; }
 .assistant-card small  { font-size: 0.72rem; color: var(--muted); }
 .form-hint { font-size: 0.78rem; color: var(--muted); margin: -6px 0 2px; }
+.dob-age-hint {
+  display: inline-block;
+  margin-top: 5px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: var(--teal-light);
+  color: var(--teal-dark);
+  padding: 2px 10px;
+  border-radius: 99px;
+  font-weight: 600;
+}
 
 /* ── Preview date groups ── */
 .preview-date-group { margin-bottom: 10px; }
@@ -1928,6 +1939,34 @@ textarea { min-height: 76px; resize: vertical; }
 }
 
 /* ── Complications / Surgeries row ── */
+/* Signs & Symptoms blocks on patient detail */
+.signs-symptoms-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+.signs-block, .symptoms-block {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+.signs-block    { background: #f0f9ff; border: 1px solid #bae6fd; }
+.symptoms-block { background: #fdf4ff; border: 1px solid #e9d5ff; }
+.ss-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+.signs-block    .ss-label { color: #0369a1; }
+.symptoms-block .ss-label { color: #7c3aed; }
+.signs-block p, .symptoms-block p { margin: 0; line-height: 1.5; }
+
 .complications-row { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .complication-badge {
   background: var(--coral-light);
@@ -2016,11 +2055,265 @@ textarea { min-height: 76px; resize: vertical; }
 /* form-section-header flex row */
 .form-section-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 
+.compact-filter-panel {
+  padding: 14px 16px;
+}
+
+.home-dashboard-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  background: linear-gradient(135deg, var(--amber-light), var(--teal-light));
+}
+.home-dashboard-hero h2 {
+  margin: 2px 0 4px;
+  font-size: 1.35rem;
+}
+.home-dashboard-hero p {
+  margin: 0;
+  color: var(--slate);
+}
+
+.home-visit-scheduler .toolbar {
+  margin-bottom: 14px;
+}
+.home-schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.home-schedule-notes {
+  grid-column: span 2;
+}
+.home-schedule-grid .form-actions {
+  align-self: end;
+}
+
+.home-no-clinic-note {
+  min-height: 42px;
+  border: 1px solid var(--amber);
+  background: var(--amber-light);
+  color: var(--amber-dark);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.day-view-header.clinic-only,
+.day-slot-row.clinic-only {
+  grid-template-columns: 56px 1fr;
+}
+
+/* ── Calendar toolbar right group ── */
+.cal-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── View toggle (Month / Day) ── */
+.view-toggle {
+  display: flex;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.view-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 13px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--slate);
+  transition: background 0.15s, color 0.15s;
+}
+.view-toggle-btn:hover { background: var(--bg); color: var(--ink); }
+.view-toggle-btn.active { background: var(--teal); color: #fff; }
+
+/* ── Month view: date row with clock link ── */
+.calendar-date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+.day-view-link {
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 1px 3px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.calendar-cell:hover .day-view-link { opacity: 1; }
+
+/* ── Day view panel ── */
+.day-view-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.day-view-header {
+  display: grid;
+  grid-template-columns: 56px 1fr 1fr;
+  border-bottom: 2px solid var(--border);
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.day-time-gutter { border-right: 1px solid var(--border); }
+.day-col-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border-right: 1px solid var(--border);
+}
+.day-col-header.home-col  { color: var(--amber-dark); background: var(--amber-light); }
+.day-col-header.clinic-col { color: var(--teal-dark);  background: var(--teal-light); }
+.day-col-header small { font-size: 0.7rem; font-weight: 500; color: var(--muted); }
+
+/* ── Day grid ── */
+.day-view-grid {
+  overflow-y: auto;
+  max-height: 68vh;
+}
+.day-slot-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 1fr;
+  min-height: 44px;
+  border-bottom: 1px solid var(--border);
+}
+.day-slot-row.hour-boundary {
+  border-bottom-color: var(--border);
+}
+.day-slot-row:not(.hour-boundary) {
+  border-bottom-style: dashed;
+  border-bottom-color: color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.day-time-label {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 5px 8px 0 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  border-right: 1px solid var(--border);
+  min-width: 56px;
+}
+
+.day-slot {
+  padding: 3px 4px;
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+.day-slot-closed {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 6px,
+    color-mix(in srgb, var(--border) 40%, transparent) 6px,
+    color-mix(in srgb, var(--border) 40%, transparent) 7px
+  );
+  cursor: not-allowed;
+}
+.day-slot-closed-label {
+  font-size: 0.65rem;
+  color: var(--muted);
+  padding: 2px 4px;
+}
+
+/* ── Empty slot button ── */
+.day-slot-empty {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  min-height: 38px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.72rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.12s, color 0.12s;
+  opacity: 0.4;
+}
+.day-slot:hover .day-slot-empty {
+  opacity: 1;
+  background: var(--bg);
+  color: var(--teal-dark);
+}
+
+/* ── Booked slot button ── */
+.day-slot-booked {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-height: 38px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  position: relative;
+  text-align: left;
+  transition: filter 0.12s;
+}
+.day-slot-booked:hover { filter: brightness(0.95); }
+.day-slot-booked.home   { background: var(--amber-light); border-color: #fcd34d; }
+.day-slot-booked.clinic { background: var(--teal-light);  border-color: var(--teal); }
+.day-slot-booked.status-completed { border-color: var(--green); background: var(--green-light); }
+.day-slot-booked.status-cancelled,
+.day-slot-booked.status-no_show   { background: #fef2f2; border-color: #fca5a5; opacity: 0.75; }
+
+.slot-booked-top, .slot-booked-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.slot-patient  { font-size: 0.78rem; font-weight: 700; color: var(--ink);  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.slot-therapy  { font-size: 0.7rem;  color: var(--slate); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+.slot-lock-icon {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  color: var(--muted);
+  opacity: 0.5;
+}
+
+/* small therapy level badge variant */
+.therapy-level-badge.sm { font-size: 0.6rem; padding: 1px 5px; }
+.status.sm { font-size: 0.62rem; padding: 2px 6px; }
+
 /* ── Responsive ── */
 @media (max-width: 1200px) {
   .metric-grid          { grid-template-columns: repeat(2, 1fr); }
   .metric-grid-5        { grid-template-columns: repeat(3, 1fr); }
   .dash-charts-row      { grid-template-columns: 1fr 1fr; }
+  .home-schedule-grid   { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 1080px) {
@@ -2044,6 +2337,7 @@ textarea { min-height: 76px; resize: vertical; }
 @media (max-width: 720px) {
   .main { padding: 16px; }
   .metric-grid, .metric-grid-5 { grid-template-columns: 1fr 1fr; }
+  .home-schedule-grid, .home-schedule-notes { grid-template-columns: 1fr; grid-column: auto; }
   .clinic-grid, .form-two-col, .add-report-form, .record-session-grid { grid-template-columns: 1fr; }
   .topbar, .toolbar { flex-direction: column; align-items: stretch; }
   .calendar-cell { min-height: 64px; }
