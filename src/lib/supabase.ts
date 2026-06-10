@@ -170,13 +170,15 @@ export async function loadRemoteData(): Promise<AppData> {
     profiles:        (profiles.data        ?? []).map((row) => mapProfile(row as ProfileRow)),
     patients:        (patients.data        ?? []).map((row) => mapPatient(row as PatientRow)),
     therapySessions: (therapySessions.data ?? []).map((row) => mapTherapySession(row as TherapySessionRow)),
+    expenses:  [],
+    equipment: [],
   };
 }
 
 // ── Write helpers ──────────────────────────────────────────
 
 export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
-  clinic_id:          patient.clinicId,
+  clinic_id:          patient.clinicId || null,
   name:               patient.name,
   phone:              patient.phone,
   date_of_birth:      patient.dateOfBirth || null,
@@ -190,7 +192,14 @@ export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
   notes:              patient.notes,
   complications:      patient.complications ?? '',
   surgeries:          patient.surgeries ?? '',
-  reports:            patient.reports ?? [],
+  reports:            (patient.reports ?? []).map(({ id, title, date, notes, fileUrl, fileName }) => ({
+    id,
+    title,
+    date,
+    notes,
+    ...(fileUrl ? { fileUrl } : {}),
+    ...(fileName ? { fileName } : {}),
+  })),
   home_visit_details: patient.homeVisitDetails ?? null,
 });
 

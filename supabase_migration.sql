@@ -142,3 +142,29 @@ alter table patients add column if not exists symptoms  text not null default ''
 -- ── Allow home-visit patients/sessions without clinic assignment ────────────
 alter table patients alter column clinic_id drop not null;
 alter table therapy_sessions alter column clinic_id drop not null;
+
+-- ── Clinic expenses ──────────────────────────────────────────────────────────
+create table if not exists clinic_expenses (
+  id            uuid primary key default gen_random_uuid(),
+  clinic_id     uuid not null references clinics(id) on delete cascade,
+  category      text not null,
+  amount        numeric(12, 2) not null default 0,
+  date          date not null,
+  recurrence    text not null default 'one-time',
+  notes         text not null default '',
+  created_at    timestamptz not null default now()
+);
+
+-- ── Equipment & tools ────────────────────────────────────────────────────────
+create table if not exists equipment (
+  id             uuid primary key default gen_random_uuid(),
+  clinic_id      uuid not null references clinics(id) on delete cascade,
+  name           text not null,
+  category       text not null,
+  purchase_date  date,
+  purchase_cost  numeric(12, 2),
+  condition      text not null default 'Good',
+  serial_number  text not null default '',
+  notes          text not null default '',
+  created_at     timestamptz not null default now()
+);

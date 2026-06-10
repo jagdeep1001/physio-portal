@@ -13,15 +13,21 @@ import {
   FileText,
   Home,
   LayoutDashboard,
+  Loader2,
   Lock,
   LogOut,
+  MapPin,
+  Phone,
   Plus,
+  Receipt,
   Search,
   ShieldCheck,
   Sparkles,
   Stethoscope,
   Trash2,
   TrendingUp,
+  Upload,
+  User,
   UserCheck,
   Users,
   X,
@@ -39,9 +45,23 @@ import {
   toProfileRow,
   toTherapySessionRow,
 } from './lib/supabase';
+import {
+  ACCEPTED_REPORT_TYPES,
+  deletePatientReports,
+  isR2Configured,
+  isStoredReportKey,
+  openStoredReport,
+  uploadPatientReport,
+} from './lib/r2';
 import type {
   AppData,
   Clinic,
+  ClinicExpense,
+  Equipment,
+  EquipmentCategory,
+  EquipmentCondition,
+  ExpenseCategory,
+  ExpenseRecurrence,
   HomeVisitDetails,
   HomeSessionRecord,
   Patient,
@@ -67,7 +87,8 @@ type Page =
   | 'homeVisits'
   | 'calendar'
   | 'clinics'
-  | 'staff';
+  | 'staff'
+  | 'expenses';
 
 type PatientDraft = Omit<Patient, 'id' | 'active'>;
 type ClinicDraft = Omit<Clinic, 'id' | 'active'>;
@@ -138,6 +159,8 @@ function loadInitialData(): AppData {
         treatmentNotes: (s as TherapySession).treatmentNotes ?? '',
         amountCollected: (s as TherapySession).amountCollected ?? null,
       })),
+      expenses:  (rest.expenses  ?? []) as ClinicExpense[],
+      equipment: (rest.equipment ?? []) as Equipment[],
     };
   } catch {
     return initialData;
@@ -150,6 +173,10 @@ function saveData(data: AppData) {
 
 function createId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function createDbId() {
+  return crypto.randomUUID();
 }
 
 function formatDateTime(value: string) {
@@ -226,7 +253,12 @@ export function App() {
   };
 
   const reportRemoteError = (error: unknown) => {
-    const message = error instanceof Error ? error.message : 'Something went wrong while saving data.';
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'object' && error !== null && 'message' in error
+          ? String((error as { message: unknown }).message)
+          : 'Something went wrong while saving data.';
     setSystemNotice(message);
   };
 
@@ -390,12 +422,12 @@ export function App() {
   };
 
   // ── Data handlers ──
-  const savePatient = async (patient: PatientDraft, editingId: string | null) => {
+  const savePatient = async (patient: PatientDraft, editingId: string | null, newPatientId?: string) => {
     if (supabase) {
       try {
         const q = editingId
           ? await supabase.from('patients').update(toPatientRow(patient)).eq('id', editingId)
-          : await supabase.from('patients').insert({ ...toPatientRow(patient), active: true });
+          : await supabase.from('patients').insert({ ...toPatientRow(patient), id: newPatientId ?? createDbId(), active: true });
         if (q.error) throw q.error;
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); }
@@ -405,8 +437,53 @@ export function App() {
       ...draftData,
       patients: editingId
         ? draftData.patients.map((item) => (item.id === editingId ? { ...item, ...patient } : item))
-        : [...draftData.patients, { ...patient, id: createId('patient'), active: true }],
+        : [...draftData.patients, { ...patient, id: newPatientId ?? createId('patient'), active: true }],
     }));
+  };
+
+  const deletePatient = async (patientId: string) => {
+    const patient = data.patients.find((p) => p.id === patientId);
+    if (!patient) return;
+
+    const sessionCount = data.therapySessions.filter((s) => s.patientId === patientId).length;
+    const storedReportCount = (patient.reports ?? []).filter((r) => isStoredReportKey(r.fileUrl)).length;
+    const confirmLines = [
+      `Delete ${patient.name} and all related data?`,
+      sessionCount > 0 ? `• ${sessionCount} therapy session(s)` : null,
+      storedReportCount > 0 ? `• ${storedReportCount} uploaded report file(s)` : null,
+      'This cannot be undone.',
+    ].filter(Boolean);
+
+    if (!window.confirm(confirmLines.join('\n'))) return;
+
+    if (isR2Configured) {
+      try {
+        await deletePatientReports(patientId);
+      } catch (error) {
+        reportRemoteError(error);
+        if (!window.confirm('Could not delete report files from storage. Delete the patient record anyway?')) return;
+      }
+    }
+
+    if (supabase) {
+      try {
+        const d = await supabase.from('patients').delete().eq('id', patientId);
+        if (d.error) throw d.error;
+        await refreshRemoteData();
+        setSystemNotice('');
+        setSelectedPatientId('');
+        setPage('patients');
+      } catch (error) { reportRemoteError(error); }
+      return;
+    }
+
+    persist((draftData) => ({
+      ...draftData,
+      patients: draftData.patients.filter((p) => p.id !== patientId),
+      therapySessions: draftData.therapySessions.filter((s) => s.patientId !== patientId),
+    }));
+    setSelectedPatientId('');
+    setPage('patients');
   };
 
   const addSession = async (session: Omit<TherapySession, 'id'>) => {
@@ -630,6 +707,30 @@ export function App() {
     }));
   };
 
+  // ── Expenses CRUD ──
+  const addExpense = (expense: Omit<ClinicExpense, 'id'>) => {
+    persist((d) => ({ ...d, expenses: [...(d.expenses ?? []), { ...expense, id: createId('exp') }] }));
+  };
+  const updateExpense = (expense: ClinicExpense) => {
+    persist((d) => ({ ...d, expenses: (d.expenses ?? []).map((e) => (e.id === expense.id ? expense : e)) }));
+  };
+  const deleteExpense = (id: string) => {
+    if (!window.confirm('Delete this expense record?')) return;
+    persist((d) => ({ ...d, expenses: (d.expenses ?? []).filter((e) => e.id !== id) }));
+  };
+
+  // ── Equipment CRUD ──
+  const addEquipment = (item: Omit<Equipment, 'id'>) => {
+    persist((d) => ({ ...d, equipment: [...(d.equipment ?? []), { ...item, id: createId('equip') }] }));
+  };
+  const updateEquipment = (item: Equipment) => {
+    persist((d) => ({ ...d, equipment: (d.equipment ?? []).map((e) => (e.id === item.id ? item : e)) }));
+  };
+  const deleteEquipment = (id: string) => {
+    if (!window.confirm('Delete this equipment record?')) return;
+    persist((d) => ({ ...d, equipment: (d.equipment ?? []).filter((e) => e.id !== id) }));
+  };
+
   if (sessionLoading) {
     return (
       <div className="session-loading">
@@ -663,6 +764,7 @@ export function App() {
     { page: 'calendar', label: 'Calendar', icon: Calendar },
     { page: 'clinics', label: 'Clinics', icon: Building2, adminOnly: true },
     { page: 'staff', label: 'Staff', icon: UserCheck, adminOnly: true },
+    { page: 'expenses', label: 'Expenses & Equipment', icon: Receipt, adminOnly: true },
   ];
 
   const goToPatientDetail = (patientId: string) => {
@@ -774,6 +876,7 @@ export function App() {
             defaultClinicId={defaultClinicId}
             patientId={selectedPatientId}
             onSavePatient={savePatient}
+            onDeletePatient={deletePatient}
             onSyncHomeVisitLog={syncHomeVisitLog}
             onBack={() => setPage('patients')}
             onGoToAddPatient={() => setPage('patientEntry')}
@@ -841,6 +944,19 @@ export function App() {
             onUpdateProfile={updateProfile}
             onAddProfile={addProfile}
             onDeleteProfile={deleteProfile}
+          />
+        )}
+        {page === 'expenses' && currentUser.role === 'admin' && (
+          <ExpensesView
+            clinics={data.clinics}
+            expenses={data.expenses ?? []}
+            equipment={data.equipment ?? []}
+            onAddExpense={addExpense}
+            onUpdateExpense={updateExpense}
+            onDeleteExpense={deleteExpense}
+            onAddEquipment={addEquipment}
+            onUpdateEquipment={updateEquipment}
+            onDeleteEquipment={deleteEquipment}
           />
         )}
       </main>
@@ -1306,6 +1422,9 @@ function HomeDashboard({
   const revenue = completed
     .filter((s) => s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const estimatedRevenue = scheduled
+    .filter((s) => s.amountCollected !== null)
+    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
   const attentionPatients = homePatients
     .map((patient) => {
       const sessions = homeSessions.filter((s) => s.patientId === patient.id);
@@ -1340,7 +1459,15 @@ function HomeDashboard({
         <MetricCard icon={CalendarDays} label="Today" value={todayHome.toString()} accent="amber" />
         <MetricCard icon={Activity} label="Upcoming" value={upcoming.length.toString()} accent="blue" />
         <MetricCard icon={Check} label="Completed" value={completed.length.toString()} accent="green" />
-        <MetricCard icon={DollarSign} label="Home revenue" value={formatCurrency(revenue)} accent="teal" />
+        <MetricCard icon={DollarSign} label="Actual revenue" value={formatCurrency(revenue)} accent="green"
+          sub="Completed visits with payment" />
+      </section>
+
+      <section className="metric-grid metric-grid-2">
+        <MetricCard icon={TrendingUp} label="Estimated revenue" value={estimatedRevenue > 0 ? formatCurrency(estimatedRevenue) : '—'}
+          accent="blue" sub="Scheduled visits (pre-set amount)" />
+        <MetricCard icon={Activity} label="Completion rate" value={`${completionRate}%`} accent="teal"
+          sub={`${completed.length} of ${totalHome} visits done`} />
       </section>
 
       <section className="dash-charts-row">
@@ -1492,22 +1619,23 @@ function PatientEntryView({
 }: {
   clinics: Clinic[];
   defaultClinicId: string;
-  onSavePatient: (patient: PatientDraft, editingId: string | null) => void;
+  onSavePatient: (patient: PatientDraft, editingId: string | null, newPatientId?: string) => void;
   onBack: () => void;
 }) {
   const [draft, setDraft] = useState<PatientDraft>(() => emptyPatient(defaultClinicId));
+  const newPatientId = useRef(createDbId()).current;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    onSavePatient(draft, null);
+    onSavePatient(draft, null, newPatientId);
     onBack();
   };
 
   return (
-    <div className="content-stack">
-      <div className="back-row">
-        <button className="ghost-button" type="button" onClick={onBack}>
-          <ChevronLeft size={16} /> Back to patients
+    <div className="content-stack patient-entry-page">
+      <div className="pe-topbar">
+        <button className="ghost-button pe-back-btn" type="button" onClick={onBack}>
+          <ChevronLeft size={16} /> Patients
         </button>
       </div>
       <PatientForm
@@ -1515,9 +1643,11 @@ function PatientEntryView({
         draft={draft}
         setDraft={setDraft}
         clinics={clinics}
+        storagePatientId={newPatientId}
         onSubmit={submit}
         onCancel={onBack}
         editing={false}
+        mode="entry"
       />
     </div>
   );
@@ -1532,7 +1662,7 @@ type HomeVisitSync =
 
 function PatientDetailView({
   data, allClinics, staff, currentUser, defaultClinicId,
-  patientId, onSavePatient, onSyncHomeVisitLog, onBack, onGoToAddPatient, onScheduleSession,
+  patientId, onSavePatient, onDeletePatient, onSyncHomeVisitLog, onBack, onGoToAddPatient, onScheduleSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
@@ -1540,7 +1670,8 @@ function PatientDetailView({
   currentUser: Profile;
   defaultClinicId: string;
   patientId: string;
-  onSavePatient: (patient: PatientDraft, editingId: string | null) => void;
+  onSavePatient: (patient: PatientDraft, editingId: string | null, newPatientId?: string) => void;
+  onDeletePatient: (patientId: string) => void | Promise<void>;
   onSyncHomeVisitLog: (patientId: string, updatedPatient: PatientDraft, sync: HomeVisitSync) => void;
   onBack: () => void;
   onGoToAddPatient: () => void;
@@ -1548,6 +1679,7 @@ function PatientDetailView({
 }) {
   const patient = data.patients.find((p) => p.id === patientId);
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [draft, setDraft] = useState<PatientDraft>(() => emptyPatient(defaultClinicId));
 
   useEffect(() => {
@@ -1590,10 +1722,37 @@ function PatientDetailView({
     .filter((s) => s.patientId === patient.id)
     .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt));
   const completedSessions = patientSessions.filter((s) => s.status === 'completed');
+  const scheduledSessions = patientSessions.filter((s) => s.status === 'scheduled');
   const homeVisitSessions = patientSessions.filter((s) => s.sessionType === 'home');
+  const clinicSessions    = patientSessions.filter((s) => s.sessionType === 'clinic');
   const totalSpent = completedSessions
     .filter((s) => s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const nextSession = patientSessions
+    .filter((s) => s.status === 'scheduled' && s.scheduledAt >= todayStr)
+    .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
+
+  const openEdit = () => {
+    setDraft({
+      clinicId: patient.clinicId,
+      name: patient.name,
+      phone: patient.phone,
+      dateOfBirth: patient.dateOfBirth,
+      gender: patient.gender,
+      address: patient.address,
+      signs: patient.signs ?? '',
+      symptoms: patient.symptoms ?? '',
+      diagnosis: patient.diagnosis,
+      referralSource: patient.referralSource,
+      emergencyContact: patient.emergencyContact,
+      notes: patient.notes,
+      complications: patient.complications ?? '',
+      surgeries: patient.surgeries ?? '',
+      reports: patient.reports ?? [],
+      homeVisitDetails: patient.homeVisitDetails,
+    });
+    setEditing(true);
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -1602,216 +1761,305 @@ function PatientDetailView({
   };
 
   return (
-    <div className="content-stack">
-      <div className="back-row">
-        <button className="ghost-button" type="button" onClick={onBack}>
-          <ChevronLeft size={16} /> Back to patients
+    <div className="content-stack patient-detail-page">
+      <div className="pp-topbar">
+        <button className="ghost-button pp-back-btn" type="button" onClick={onBack}>
+          <ChevronLeft size={16} /> Patients
         </button>
-        <button className="secondary-button" type="button" onClick={() => setEditing((v) => !v)}>
-          {editing ? <><X size={15} /> Close edit</> : 'Edit patient'}
-        </button>
+        <div className="pp-topbar-actions">
+          <button className="secondary-button" type="button" onClick={() => (editing ? setEditing(false) : openEdit())}>
+            {editing ? <><X size={15} /> Close edit</> : <><ClipboardList size={15} /> Edit record</>}
+          </button>
+          <button
+            className="danger-button"
+            type="button"
+            disabled={deleting}
+            onClick={async () => {
+              setDeleting(true);
+              try { await onDeletePatient(patient.id); } finally { setDeleting(false); }
+            }}
+          >
+            {deleting ? <Loader2 size={15} className="icon-spin" /> : <Trash2 size={15} />}
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
       </div>
 
-      {/* Profile card */}
-      <section className="panel patient-profile-card">
-        <div className="profile-header">
-          <div className="profile-avatar">{patient.name.charAt(0)}</div>
-          <div>
-            <h2>{patient.name}</h2>
-            <p>{patient.diagnosis}</p>
-            <div className="badge-row">
-              <span className="badge badge-teal">{patient.gender}</span>
-              <span className="badge badge-slate">{calculateAge(patient.dateOfBirth)} yrs</span>
-              <span className={`badge ${patient.active ? 'badge-green' : 'badge-muted'}`}>
-                {patient.active ? 'Active' : 'Inactive'}
-              </span>
-            </div>
-          </div>
-          <div className="profile-actions">
-            <button
-              className="primary-button"
-              onClick={() => onScheduleSession(patient.id, 'clinic')}
-            >
-              <Stethoscope size={15} /> Schedule clinic session
-            </button>
-            <button
-              className="amber-button"
-              onClick={() => onScheduleSession(patient.id, 'home')}
-            >
-              <Home size={15} /> Schedule home visit
-            </button>
-          </div>
-        </div>
-        <div className="facts">
-          <span><strong>Clinic</strong>{clinicName(allClinics, patient.clinicId)}</span>
-          <span><strong>Phone</strong>{patient.phone}</span>
-          <span><strong>Address</strong>{patient.address || '—'}</span>
-          <span><strong>Emergency</strong>{patient.emergencyContact || '—'}</span>
-          <span><strong>Referral</strong>{patient.referralSource || '—'}</span>
-          <span><strong>DOB</strong>{patient.dateOfBirth ? formatDate(patient.dateOfBirth) : '—'}</span>
-        </div>
-        {(patient.signs || patient.symptoms) && (
-          <div className="signs-symptoms-row">
-            {patient.signs && (
-              <div className="signs-block">
-                <span className="ss-label">Signs</span>
-                <p>{patient.signs}</p>
-              </div>
-            )}
-            {patient.symptoms && (
-              <div className="symptoms-block">
-                <span className="ss-label">Symptoms</span>
-                <p>{patient.symptoms}</p>
-              </div>
-            )}
-          </div>
-        )}
-        {(patient.complications || patient.surgeries) && (
-          <div className="complications-row">
-            {patient.complications && (
-              <div className="complication-badge">
-                <strong>Complications:</strong> {patient.complications}
-              </div>
-            )}
-            {patient.surgeries && (
-              <div className="complication-badge surgery">
-                <strong>Surgeries:</strong> {patient.surgeries}
-              </div>
-            )}
-          </div>
-        )}
-        {patient.notes && <p className="clinical-note">Notes: {patient.notes}</p>}
-      </section>
-
-      {/* Stats row */}
-      <section className="metric-grid four-col">
-        <MetricCard icon={CalendarDays} label="Total sessions" value={patientSessions.length.toString()} accent="blue" />
-        <MetricCard icon={Check} label="Completed" value={completedSessions.length.toString()} accent="green" />
-        <MetricCard icon={Home} label="Home visits" value={homeVisitSessions.length.toString()} accent="amber" />
-        <MetricCard icon={DollarSign} label="Total paid" value={formatCurrency(totalSpent)} accent="teal" />
-      </section>
-
-      {/* Reports */}
-      <section className="panel">
-        <PanelTitle title="Reports" subtitle="Attached documents and notes" />
-        {(patient.reports ?? []).length === 0 ? (
-          <EmptyState message="No reports attached yet. Use Edit patient to add reports." />
-        ) : (
-          <div className="list">
-            {(patient.reports ?? []).map((report) => (
-              <div key={report.id} className="list-row report-row">
-                <span className="report-icon"><FileText size={18} /></span>
-                <span>
-                  <strong>{report.title}</strong>
-                  <small>{formatDate(report.date)}</small>
-                  {report.notes && <p className="report-notes">{report.notes}</p>}
+      {/* ── Hero header ── */}
+      <section className="pp-hero">
+        <div className="pp-hero-accent" />
+        <div className="pp-hero-body">
+          <div className="pp-hero-main">
+            <div className="pp-avatar">{patient.name.charAt(0).toUpperCase()}</div>
+            <div className="pp-identity">
+              <p className="pp-eyebrow">{patient.clinicId ? clinicName(allClinics, patient.clinicId) : 'Home visit patient'}</p>
+              <h1 className="pp-name">{patient.name}</h1>
+              {patient.diagnosis && <p className="pp-diagnosis">{patient.diagnosis}</p>}
+              <div className="pp-badges">
+                <span className="pp-badge">{patient.gender}</span>
+                <span className="pp-badge">{calculateAge(patient.dateOfBirth)} yrs</span>
+                <span className={`pp-badge pp-badge-${patient.active ? 'active' : 'inactive'}`}>
+                  {patient.active ? 'Active' : 'Inactive'}
                 </span>
-                {report.fileUrl && (
-                  <a className="secondary-button icon-only" href={report.fileUrl} target="_blank" rel="noreferrer" title="Open report">
-                    <ExternalLink size={14} />
-                  </a>
+                {homeVisitSessions.length > 0 && (
+                  <span className="pp-badge pp-badge-home"><Home size={11} /> Home visits</span>
                 )}
               </div>
-            ))}
+            </div>
           </div>
-        )}
-      </section>
+          <div className="pp-hero-actions">
+            <button className="primary-button" onClick={() => onScheduleSession(patient.id, 'clinic')}>
+              <Stethoscope size={15} /> Schedule clinic
+            </button>
+            <button className="amber-button" onClick={() => onScheduleSession(patient.id, 'home')}>
+              <Home size={15} /> Schedule home
+            </button>
+          </div>
+        </div>
 
-      {/* All sessions */}
-      <section className="panel">
-        <PanelTitle title="Session history" subtitle={`${patientSessions.length} total sessions`} />
-        <div className="list">
-          {patientSessions.length === 0 ? (
-            <EmptyState message="No sessions recorded yet." />
-          ) : (
-            patientSessions.map((session) => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                data={data}
-                showTreatmentNotes
-                showAmount
-              />
-            ))
+        {/* Quick stats strip */}
+        <div className="pp-stats-strip">
+          <div className="pp-stat">
+            <CalendarDays size={16} />
+            <div><strong>{patientSessions.length}</strong><span>Total sessions</span></div>
+          </div>
+          <div className="pp-stat">
+            <Check size={16} />
+            <div><strong>{completedSessions.length}</strong><span>Completed</span></div>
+          </div>
+          <div className="pp-stat">
+            <Activity size={16} />
+            <div><strong>{scheduledSessions.length}</strong><span>Scheduled</span></div>
+          </div>
+          <div className="pp-stat">
+            <DollarSign size={16} />
+            <div><strong>{formatCurrency(totalSpent)}</strong><span>Total paid</span></div>
+          </div>
+          {nextSession && (
+            <div className="pp-stat pp-stat-next">
+              <Clock size={16} />
+              <div><strong>{formatDateTime(nextSession.scheduledAt)}</strong><span>Next visit</span></div>
+            </div>
           )}
         </div>
       </section>
 
-      {/* Home visit caregiver + session log */}
-      {(homeVisitSessions.length > 0 || patient.homeVisitDetails) && (
-        <HomeVisitPanel
-          patient={patient}
-          homeVisitSessions={homeVisitSessions}
-          staff={staff}
-          onToggleHomeLog={(date, record) => {
-            const hvd   = patient.homeVisitDetails ?? emptyHomeVisitDetails();
-            const log   = hvd.homeSessionLog ?? [];
-            const notes = { ...(hvd.homeSessionNotes ?? {}) };
+      {/* ── Contact & info cards ── */}
+      <div className="pp-info-grid">
+        <div className="pp-info-card">
+          <Phone size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Phone</span>
+          <span className="pp-info-value">{patient.phone || '—'}</span>
+        </div>
+        <div className="pp-info-card">
+          <MapPin size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Address</span>
+          <span className="pp-info-value">{patient.address || '—'}</span>
+        </div>
+        <div className="pp-info-card">
+          <UserCheck size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Emergency contact</span>
+          <span className="pp-info-value">{patient.emergencyContact || '—'}</span>
+        </div>
+        <div className="pp-info-card">
+          <ExternalLink size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Referral source</span>
+          <span className="pp-info-value">{patient.referralSource || '—'}</span>
+        </div>
+        <div className="pp-info-card">
+          <Calendar size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Date of birth</span>
+          <span className="pp-info-value">{patient.dateOfBirth ? formatDate(patient.dateOfBirth) : '—'}</span>
+        </div>
+        <div className="pp-info-card">
+          <Stethoscope size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Session mix</span>
+          <span className="pp-info-value">{clinicSessions.length} clinic · {homeVisitSessions.length} home</span>
+        </div>
+      </div>
 
-            // Build patient payload from live patient (never stale draft)
-            const buildPayload = (newHvd: HomeVisitDetails): PatientDraft => ({
-              clinicId: patient.clinicId, name: patient.name, phone: patient.phone,
-              dateOfBirth: patient.dateOfBirth, gender: patient.gender, address: patient.address,
-              signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
-              diagnosis: patient.diagnosis, referralSource: patient.referralSource,
-              emergencyContact: patient.emergencyContact, notes: patient.notes,
-              complications: patient.complications ?? '', surgeries: patient.surgeries ?? '',
-              reports: patient.reports ?? [], homeVisitDetails: newHvd,
-            });
+      {/* ── Two-column body ── */}
+      <div className="pp-body-grid">
 
-            if (record === null) {
-              // ── Undo mark ──
-              delete notes[date];
-              const updated: HomeVisitDetails = {
-                ...hvd, homeSessionLog: log.filter((d) => d !== date), homeSessionNotes: notes,
-              };
-              const matchingSession = patientSessions.find(
-                (s) => s.sessionType === 'home' && s.scheduledAt.startsWith(date) && s.status === 'completed'
-              );
-              onSyncHomeVisitLog(patient.id, buildPayload(updated),
-                matchingSession
-                  ? { action: 'update', sessionId: matchingSession.id, updates: { status: 'scheduled', completedAt: null, amountCollected: null } }
-                  : { action: 'none' }
-              );
-            } else {
-              // ── Mark done ──
-              notes[date] = record;
-              const updated: HomeVisitDetails = {
-                ...hvd, homeSessionLog: log.includes(date) ? log : [...log, date], homeSessionNotes: notes,
-              };
-              const existingSession = patientSessions.find(
-                (s) => s.sessionType === 'home' && s.scheduledAt.startsWith(date)
-              );
-              onSyncHomeVisitLog(patient.id, buildPayload(updated),
-                existingSession
-                  ? { action: 'update', sessionId: existingSession.id, updates: {
-                      status: 'completed', completedAt: `${date}T12:00:00.000Z`,
-                      treatmentNotes: record.notes, amountCollected: record.amount,
-                    }}
-                  : { action: 'create', session: {
-                      patientId: patient.id, clinicId: null,
-                      sessionType: 'home', therapyType: 'Home Visit', therapyLevel: 'basic',
-                      assignedStaffId: '', scheduledAt: `${date}T09:00:00.000Z`,
-                      status: 'completed', completedAt: `${date}T09:00:00.000Z`,
-                      notes: '', treatmentNotes: record.notes, amountCollected: record.amount,
-                    }}
-              );
-            }
-          }}
-        />
-      )}
+        {/* Left: clinical + home visit */}
+        <div className="pp-body-col">
 
-      {/* Edit form */}
+          {/* Clinical overview */}
+          {(patient.signs || patient.symptoms || patient.complications || patient.surgeries || patient.notes) && (
+            <section className="panel pp-section">
+              <PanelTitle title="Clinical overview" subtitle="Signs, symptoms and medical history" />
+              {(patient.signs || patient.symptoms) && (
+                <div className="pp-clinical-grid">
+                  {patient.signs && (
+                    <div className="pp-clinical-block pp-clinical-signs">
+                      <span className="pp-clinical-label">Signs</span>
+                      <p>{patient.signs}</p>
+                    </div>
+                  )}
+                  {patient.symptoms && (
+                    <div className="pp-clinical-block pp-clinical-symptoms">
+                      <span className="pp-clinical-label">Symptoms</span>
+                      <p>{patient.symptoms}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              {(patient.complications || patient.surgeries) && (
+                <div className="pp-clinical-tags">
+                  {patient.complications && (
+                    <div className="pp-tag pp-tag-warn"><strong>Complications:</strong> {patient.complications}</div>
+                  )}
+                  {patient.surgeries && (
+                    <div className="pp-tag pp-tag-surgery"><strong>Surgeries:</strong> {patient.surgeries}</div>
+                  )}
+                </div>
+              )}
+              {patient.notes && (
+                <div className="pp-notes-block">
+                  <span className="pp-clinical-label">General notes</span>
+                  <p>{patient.notes}</p>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* Home visit panel */}
+          {(homeVisitSessions.length > 0 || patient.homeVisitDetails) && (
+            <HomeVisitPanel
+              patient={patient}
+              homeVisitSessions={homeVisitSessions}
+              staff={staff}
+              onToggleHomeLog={(date, record) => {
+                const hvd   = patient.homeVisitDetails ?? emptyHomeVisitDetails();
+                const log   = hvd.homeSessionLog ?? [];
+                const notes = { ...(hvd.homeSessionNotes ?? {}) };
+                const buildPayload = (newHvd: HomeVisitDetails): PatientDraft => ({
+                  clinicId: patient.clinicId, name: patient.name, phone: patient.phone,
+                  dateOfBirth: patient.dateOfBirth, gender: patient.gender, address: patient.address,
+                  signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
+                  diagnosis: patient.diagnosis, referralSource: patient.referralSource,
+                  emergencyContact: patient.emergencyContact, notes: patient.notes,
+                  complications: patient.complications ?? '', surgeries: patient.surgeries ?? '',
+                  reports: patient.reports ?? [], homeVisitDetails: newHvd,
+                });
+                if (record === null) {
+                  delete notes[date];
+                  const updated: HomeVisitDetails = { ...hvd, homeSessionLog: log.filter((d) => d !== date), homeSessionNotes: notes };
+                  const matchingSession = patientSessions.find(
+                    (s) => s.sessionType === 'home' && s.scheduledAt.startsWith(date) && s.status === 'completed'
+                  );
+                  onSyncHomeVisitLog(patient.id, buildPayload(updated),
+                    matchingSession
+                      ? { action: 'update', sessionId: matchingSession.id, updates: { status: 'scheduled', completedAt: null, amountCollected: null } }
+                      : { action: 'none' }
+                  );
+                } else {
+                  notes[date] = record;
+                  const updated: HomeVisitDetails = { ...hvd, homeSessionLog: log.includes(date) ? log : [...log, date], homeSessionNotes: notes };
+                  const existingSession = patientSessions.find((s) => s.sessionType === 'home' && s.scheduledAt.startsWith(date));
+                  onSyncHomeVisitLog(patient.id, buildPayload(updated),
+                    existingSession
+                      ? { action: 'update', sessionId: existingSession.id, updates: {
+                          status: 'completed', completedAt: `${date}T12:00:00.000Z`,
+                          treatmentNotes: record.notes, amountCollected: record.amount,
+                        }}
+                      : { action: 'create', session: {
+                          patientId: patient.id, clinicId: null,
+                          sessionType: 'home', therapyType: 'Home Visit', therapyLevel: 'basic',
+                          assignedStaffId: '', scheduledAt: `${date}T09:00:00.000Z`,
+                          status: 'completed', completedAt: `${date}T09:00:00.000Z`,
+                          notes: '', treatmentNotes: record.notes, amountCollected: record.amount,
+                        }}
+                  );
+                }
+              }}
+            />
+          )}
+        </div>
+
+        {/* Right: reports + sessions */}
+        <div className="pp-body-col">
+
+          {/* Reports */}
+          <section className="panel pp-section">
+            <PanelTitle title="Reports & documents" subtitle={`${(patient.reports ?? []).length} attached`} />
+            {(patient.reports ?? []).length === 0 ? (
+              <EmptyState message="No reports yet. Use Edit record to attach documents." />
+            ) : (
+              <div className="pp-reports-grid">
+                {(patient.reports ?? []).map((report) => (
+                  <div key={report.id} className="pp-report-card">
+                    <div className="pp-report-icon"><FileText size={20} /></div>
+                    <div className="pp-report-body">
+                      <strong>{report.title}</strong>
+                      <small>{formatDate(report.date)}</small>
+                      {report.fileName && <span className="pp-report-file">{report.fileName}</span>}
+                      {report.notes && <p className="pp-report-notes">{report.notes}</p>}
+                    </div>
+                    {report.fileUrl && <ReportDownloadButton report={report} />}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Session history */}
+          <section className="panel pp-section">
+            <PanelTitle title="Session history" subtitle={`${patientSessions.length} sessions · ${completedSessions.length} completed`} />
+            {patientSessions.length === 0 ? (
+              <EmptyState message="No sessions recorded yet." />
+            ) : (
+              <div className="pp-session-list">
+                {patientSessions.map((session) => (
+                  <div key={session.id} className={`pp-session-item status-${session.status}`}>
+                    <div className="pp-session-date">
+                      <span className="pp-session-day">{new Intl.DateTimeFormat('en', { day: 'numeric' }).format(new Date(session.scheduledAt))}</span>
+                      <span className="pp-session-mon">{new Intl.DateTimeFormat('en', { month: 'short' }).format(new Date(session.scheduledAt))}</span>
+                    </div>
+                    <div className="pp-session-body">
+                      <div className="pp-session-top">
+                        <strong>{session.therapyType}</strong>
+                        <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
+                      </div>
+                      <div className="pp-session-meta">
+                        {session.sessionType === 'home'
+                          ? <span className="badge badge-amber"><Home size={10} /> Home</span>
+                          : <span className="badge badge-teal"><Stethoscope size={10} /> Clinic</span>}
+                        <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
+                        <span className="pp-session-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</span>
+                      </div>
+                      {session.treatmentNotes && (
+                        <p className="pp-session-notes">{session.treatmentNotes}</p>
+                      )}
+                    </div>
+                    {session.amountCollected !== null && session.status === 'completed' && (
+                      <span className="revenue-badge pp-session-amount">{formatCurrency(session.amountCollected)}</span>
+                    )}
+                    {session.amountCollected !== null && session.status === 'scheduled' && (
+                      <span className="revenue-badge est pp-session-amount">Est. {formatCurrency(session.amountCollected)}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+
+      {/* Edit form modal */}
       {editing && (
-        <PatientForm
-          title="Update patient record"
-          draft={draft}
-          setDraft={setDraft}
-          clinics={currentUser.role === 'admin' ? allClinics.filter((c) => c.active) : data.clinics}
-          onSubmit={submit}
-          onCancel={() => setEditing(false)}
-          editing
-        />
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setEditing(false); }}>
+          <PatientForm
+            title="Update patient record"
+            draft={draft}
+            setDraft={setDraft}
+            clinics={currentUser.role === 'admin' ? allClinics.filter((c) => c.active) : data.clinics}
+            storagePatientId={patient.id}
+            onSubmit={submit}
+            onCancel={() => setEditing(false)}
+            editing
+          />
+        </div>
       )}
     </div>
   );
@@ -1873,33 +2121,31 @@ function HomeVisitPanel({
       {/* Mark-done popup */}
       {pendingDate && (
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setPendingDate(null); }}>
-          <form className="modal-panel form-grid" onSubmit={submitMarkDone}>
+          <form className="modal-panel" style={{ maxWidth: 420 }} onSubmit={submitMarkDone}>
+            <div className="modal-accent modal-accent-teal" />
             <div className="modal-header">
+              <div className="modal-header-icon">✅</div>
               <div>
                 <h3 className="modal-title">Mark session done</h3>
                 <p className="modal-sub">{pendingDate}</p>
               </div>
               <button type="button" className="icon-btn" onClick={() => setPendingDate(null)}><X size={18} /></button>
             </div>
-            <label>
-              Treatment notes
-              <textarea
-                rows={3}
-                value={popupForm.notes}
-                onChange={(e) => setPopupForm((f) => ({ ...f, notes: e.target.value }))}
-                placeholder="What was done in this session…"
-              />
-            </label>
-            <label>
-              Amount collected (₹)
-              <input
-                type="number" min="0" step="0.01"
-                value={popupForm.amount}
-                onChange={(e) => setPopupForm((f) => ({ ...f, amount: e.target.value }))}
-                placeholder="0"
-              />
-            </label>
-            <div className="button-row modal-footer-row">
+            <div className="modal-body">
+              <label>
+                Treatment notes
+                <textarea rows={3} value={popupForm.notes}
+                  onChange={(e) => setPopupForm((f) => ({ ...f, notes: e.target.value }))}
+                  placeholder="What was done in this session…" />
+              </label>
+              <label>
+                Amount collected (₹)
+                <input type="number" min="0" step="0.01" value={popupForm.amount}
+                  onChange={(e) => setPopupForm((f) => ({ ...f, amount: e.target.value }))}
+                  placeholder="0" />
+              </label>
+            </div>
+            <div className="modal-footer">
               <button className="ghost-button" type="button" onClick={() => setPendingDate(null)}><X size={14} /> Cancel</button>
               <button className="primary-button" type="submit"><Check size={14} /> Mark done</button>
             </div>
@@ -2032,264 +2278,644 @@ function HomeVisitPanel({
 
 // ─── Patient Form (Add / Edit) ────────────────────────────────────────────────
 
+function ReportDownloadButton({ report }: { report: PatientReport }) {
+  const [opening, setOpening] = useState(false);
+
+  if (!report.fileUrl) return null;
+
+  if (!isStoredReportKey(report.fileUrl)) {
+    return (
+      <a className="secondary-button icon-only" href={report.fileUrl} target="_blank" rel="noreferrer" title="Open report">
+        <ExternalLink size={14} />
+      </a>
+    );
+  }
+
+  return (
+    <button
+      className="secondary-button icon-only"
+      type="button"
+      disabled={opening}
+      title={report.fileName ? `Open ${report.fileName}` : 'Open report'}
+      onClick={async () => {
+        setOpening(true);
+        try {
+          await openStoredReport(report.fileUrl!);
+        } catch (error) {
+          window.alert(error instanceof Error ? error.message : 'Could not open report.');
+        } finally {
+          setOpening(false);
+        }
+      }}
+    >
+      {opening ? <Loader2 size={14} className="icon-spin" /> : <ExternalLink size={14} />}
+    </button>
+  );
+}
+
+function PatientFormSection({
+  entry, step, title, subtitle, icon: Icon, children,
+}: {
+  entry: boolean;
+  step?: number;
+  title?: string;
+  subtitle?: string;
+  icon?: LucideIcon;
+  children: ReactNode;
+}) {
+  if (!entry) return <>{children}</>;
+  return (
+    <section className="pe-section">
+      <div className="pe-section-head">
+        {step != null && <span className="pe-step">{step}</span>}
+        <div className="pe-section-titles">
+          {Icon && title && (
+            <h3><Icon size={16} /> {title}</h3>
+          )}
+          {subtitle && <p>{subtitle}</p>}
+        </div>
+      </div>
+      <div className="pe-section-body">{children}</div>
+    </section>
+  );
+}
+
 function PatientForm({
-  title, draft, setDraft, clinics, onSubmit, onCancel, editing,
+  title, draft, setDraft, clinics, storagePatientId, onSubmit, onCancel, editing,
+  mode = 'compact',
 }: {
   title: string;
   draft: PatientDraft;
   setDraft: (d: PatientDraft) => void;
   clinics: Clinic[];
+  storagePatientId: string;
   onSubmit: (e: FormEvent) => void;
   onCancel: () => void;
   editing: boolean;
+  mode?: 'entry' | 'compact';
 }) {
+  const isEntry = mode === 'entry';
   const [newReport, setNewReport] = useState<Omit<PatientReport, 'id'>>({
-    title: '', date: todayStr, notes: '', fileUrl: '',
+    title: '', date: todayStr, notes: '', fileUrl: '', fileName: '',
   });
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadingReport, setUploadingReport] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const addReport = () => {
+  const completion = useMemo(() => {
+    const checks = [
+      Boolean(draft.name.trim()),
+      Boolean(draft.phone.trim()),
+      Boolean(draft.dateOfBirth),
+      Boolean(draft.diagnosis.trim()),
+      draft.homeVisitDetails ? true : Boolean(draft.clinicId),
+    ];
+    return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  }, [draft]);
+
+  const previewInitials = useMemo(() => {
+    const parts = draft.name.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '?';
+    return parts.slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('');
+  }, [draft.name]);
+
+  const resetReportForm = () => {
+    setNewReport({ title: '', date: todayStr, notes: '', fileUrl: '', fileName: '' });
+    setSelectedFile(null);
+    setReportError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const addReport = async () => {
     if (!newReport.title.trim()) return;
-    const report: PatientReport = { ...newReport, id: createId('report') };
-    setDraft({ ...draft, reports: [...(draft.reports ?? []), report] });
-    setNewReport({ title: '', date: todayStr, notes: '', fileUrl: '' });
+    if (selectedFile && !isR2Configured) {
+      setReportError('Report uploads require Cloudflare R2. Add VITE_R2_API_URL and VITE_R2_API_TOKEN.');
+      return;
+    }
+
+    setReportError('');
+    setUploadingReport(true);
+
+    try {
+      const reportId = createId('report');
+      let fileUrl = newReport.fileUrl;
+      let fileName = newReport.fileName;
+
+      if (selectedFile) {
+        const uploaded = await uploadPatientReport(storagePatientId, reportId, selectedFile);
+        fileUrl = uploaded.key;
+        fileName = uploaded.fileName;
+      }
+
+      const report: PatientReport = {
+        ...newReport,
+        id: reportId,
+        fileUrl: fileUrl || undefined,
+        fileName: fileName || undefined,
+      };
+      setDraft({ ...draft, reports: [...(draft.reports ?? []), report] });
+      resetReportForm();
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Could not upload report.');
+    } finally {
+      setUploadingReport(false);
+    }
   };
 
   const removeReport = (reportId: string) => {
     setDraft({ ...draft, reports: (draft.reports ?? []).filter((r) => r.id !== reportId) });
   };
 
-  return (
-    <form className="panel form-grid" onSubmit={onSubmit}>
-      <PanelTitle title={title} subtitle="Clinical record details" />
+  const setClinicPatient = () => {
+    setDraft({
+      ...draft,
+      clinicId: draft.clinicId ?? clinics[0]?.id ?? '',
+      homeVisitDetails: undefined,
+    });
+  };
 
-      <div className="form-two-col">
-        {!draft.homeVisitDetails ? (
-          <label>
-            Clinic <span className="required">*</span>
-            <select required value={draft.clinicId ?? ''} onChange={(e) => setDraft({ ...draft, clinicId: e.target.value })}>
-              {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </label>
-        ) : (
-          <div className="home-no-clinic-note">
-            <Home size={15} />
-            Home-visit patient — no clinic assignment required
-          </div>
-        )}
-        <label>
-          Gender
-          <select value={draft.gender} onChange={(e) => setDraft({ ...draft, gender: e.target.value as Patient['gender'] })}>
-            <option>Female</option><option>Male</option><option>Other</option>
-          </select>
-        </label>
-        <label>
-          Full name
-          <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-        </label>
-        <label>
-          Phone
-          <input required value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} />
-        </label>
-        <label>
-          Date of birth
-          <input required type="date" value={draft.dateOfBirth} onChange={(e) => setDraft({ ...draft, dateOfBirth: e.target.value })} />
-          {draft.dateOfBirth && (
-            <span className="dob-age-hint">Age: <strong>{calculateAge(draft.dateOfBirth)} yrs</strong></span>
-          )}
-        </label>
-        <label>
-          Address
-          <input value={draft.address} onChange={(e) => setDraft({ ...draft, address: e.target.value })} />
-        </label>
-        <label>
-          Referral source
-          <input value={draft.referralSource} onChange={(e) => setDraft({ ...draft, referralSource: e.target.value })} />
-        </label>
-        <label>
-          Emergency contact
-          <input value={draft.emergencyContact} onChange={(e) => setDraft({ ...draft, emergencyContact: e.target.value })} />
-        </label>
-      </div>
+  const setHomePatient = () => {
+    setDraft({
+      ...draft,
+      clinicId: null,
+      homeVisitDetails: draft.homeVisitDetails ?? emptyHomeVisitDetails(),
+    });
+  };
 
-      <div className="form-two-col">
-        <label>
-          Signs
-          <textarea
-            value={draft.signs ?? ''}
-            onChange={(e) => setDraft({ ...draft, signs: e.target.value })}
-            placeholder="Observable clinical signs (e.g. swelling, tenderness, reduced ROM)"
-            rows={3}
-          />
-        </label>
-        <label>
-          Symptoms
-          <textarea
-            value={draft.symptoms ?? ''}
-            onChange={(e) => setDraft({ ...draft, symptoms: e.target.value })}
-            placeholder="Patient-reported symptoms (e.g. pain, stiffness, weakness)"
-            rows={3}
-          />
-        </label>
-      </div>
+  const genderOptions: Patient['gender'][] = ['Female', 'Male', 'Other'];
 
-      <label>
-        Diagnosis
-        <textarea required value={draft.diagnosis} onChange={(e) => setDraft({ ...draft, diagnosis: e.target.value })} />
-      </label>
-
-      <div className="form-two-col">
-        <label>
-          Complications (if any)
-          <textarea
-            rows={2}
-            placeholder="e.g. Diabetes, hypertension, neuropathy…"
-            value={draft.complications ?? ''}
-            onChange={(e) => setDraft({ ...draft, complications: e.target.value })}
-          />
-        </label>
-        <label>
-          Surgeries (if any)
-          <textarea
-            rows={2}
-            placeholder="e.g. ACL reconstruction March 2026, L4/L5 discectomy 2023…"
-            value={draft.surgeries ?? ''}
-            onChange={(e) => setDraft({ ...draft, surgeries: e.target.value })}
-          />
-        </label>
-      </div>
-
-      <label>
-        Notes
-        <textarea value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} />
-      </label>
-
-      {/* Home visit details section */}
-      <div className="form-section">
-        <div className="form-section-header">
-          <h3 className="form-section-title"><Home size={15} /> Home visit details</h3>
-          {!draft.homeVisitDetails ? (
-            <button
-              type="button" className="ghost-button"
-              onClick={() => setDraft({ ...draft, clinicId: null, homeVisitDetails: emptyHomeVisitDetails() })}
-            >
-              <Plus size={14} /> Enable
-            </button>
-          ) : (
-            <button
-              type="button" className="ghost-button"
-              onClick={() => setDraft({ ...draft, clinicId: clinics[0]?.id ?? '', homeVisitDetails: undefined })}
-            >
-              <X size={14} /> Remove
-            </button>
-          )}
+  const reportsBlock = (
+    <>
+      {!isR2Configured && (
+        <p className="report-upload-hint">
+          Connect Cloudflare R2 to upload PDFs and images. Reports can still be saved with title and notes only.
+        </p>
+      )}
+      {(draft.reports ?? []).length > 0 && (
+        <div className={isEntry ? 'pe-reports-list' : 'list'}>
+          {(draft.reports ?? []).map((report) => (
+            <div key={report.id} className={isEntry ? 'pe-report-chip' : 'list-row compact report-row'}>
+              <span>
+                <strong>{report.title}</strong>
+                <small>{formatDate(report.date)}</small>
+                {report.fileName && <small className="report-file-name">{report.fileName}</small>}
+              </span>
+              <button className="ghost-button icon-only" type="button" onClick={() => removeReport(report.id)} title="Remove">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
         </div>
-        {draft.homeVisitDetails && (
+      )}
+      <div className={isEntry ? 'pe-add-report' : 'add-report-form'}>
+        <input
+          placeholder="Report title"
+          value={newReport.title}
+          onChange={(e) => setNewReport({ ...newReport, title: e.target.value })}
+        />
+        <input
+          type="date"
+          value={newReport.date}
+          onChange={(e) => setNewReport({ ...newReport, date: e.target.value })}
+        />
+        <label className="file-upload-field">
+          <span>Upload report file (optional)</span>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_REPORT_TYPES}
+            disabled={!isR2Configured || uploadingReport}
+            onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+          />
+          {selectedFile && <small className="report-file-name">{selectedFile.name}</small>}
+        </label>
+        <textarea
+          placeholder="Notes (optional)"
+          value={newReport.notes}
+          onChange={(e) => setNewReport({ ...newReport, notes: e.target.value })}
+        />
+        {reportError && <p className="report-upload-error">{reportError}</p>}
+        <button className="secondary-button" type="button" onClick={() => void addReport()} disabled={uploadingReport}>
+          {uploadingReport ? <Loader2 size={14} className="icon-spin" /> : <Upload size={14} />}
+          {uploadingReport ? 'Uploading…' : 'Add report'}
+        </button>
+      </div>
+    </>
+  );
+
+  return (
+    <form
+      className={
+        isEntry ? 'pe-form'
+          : editing ? 'modal-panel patient-edit-modal form-grid'
+          : 'panel form-grid'
+      }
+      onSubmit={onSubmit}
+    >
+      {isEntry ? (
+        <>
+          <div className="pe-hero">
+            <div className="pe-hero-accent" />
+            <div className="pe-hero-body">
+              <div className="pe-hero-preview">
+                <div className="pe-avatar">{previewInitials}</div>
+                <div>
+                  <h1 className="pe-hero-title">{draft.name.trim() || 'New patient'}</h1>
+                  <p className="pe-hero-sub">
+                    {draft.diagnosis.trim() || 'Fill in details below to create the clinical record'}
+                  </p>
+                  <div className="pe-hero-badges">
+                    {draft.homeVisitDetails ? (
+                      <span className="pe-hero-badge home"><Home size={12} /> Home visit</span>
+                    ) : (
+                      <span className="pe-hero-badge clinic"><Building2 size={12} /> Clinic patient</span>
+                    )}
+                    {draft.dateOfBirth && (
+                      <span className="pe-hero-badge">{calculateAge(draft.dateOfBirth)} yrs</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="pe-progress-wrap">
+                <div className="pe-progress-label">
+                  <span>Profile completion</span>
+                  <strong>{completion}%</strong>
+                </div>
+                <div className="pe-progress-track">
+                  <div className="pe-progress-fill" style={{ width: `${completion}%` }} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <PatientFormSection
+            entry
+            step={1}
+            title="Patient type"
+            subtitle="Choose where this patient receives care"
+            icon={MapPin}
+          >
+            <div className="pe-type-cards">
+              <button
+                type="button"
+                className={`pe-type-card${!draft.homeVisitDetails ? ' active' : ''}`}
+                onClick={setClinicPatient}
+              >
+                <Building2 size={22} />
+                <strong>Clinic patient</strong>
+                <span>Assigned to a clinic location</span>
+              </button>
+              <button
+                type="button"
+                className={`pe-type-card${draft.homeVisitDetails ? ' active' : ''}`}
+                onClick={setHomePatient}
+              >
+                <Home size={22} />
+                <strong>Home visit</strong>
+                <span>Physiotherapy at the patient&apos;s home</span>
+              </button>
+            </div>
+            {!draft.homeVisitDetails && (
+              <label className="pe-clinic-select">
+                Clinic <span className="required">*</span>
+                <select required value={draft.clinicId ?? ''} onChange={(e) => setDraft({ ...draft, clinicId: e.target.value })}>
+                  {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </label>
+            )}
+          </PatientFormSection>
+        </>
+      ) : editing ? (
+        <>
+          <div className="modal-accent modal-accent-teal" />
+          <div className="modal-header">
+            <div className="modal-header-icon"><User size={18} /></div>
+            <div>
+              <h3 className="modal-title">{title}</h3>
+              <p className="modal-sub">Update clinical record, home visit details and reports</p>
+            </div>
+            <button type="button" className="icon-btn" onClick={onCancel} aria-label="Close"><X size={18} /></button>
+          </div>
+        </>
+      ) : (
+        <PanelTitle title={title} subtitle="Clinical record details" />
+      )}
+
+      <div className={!isEntry && editing ? 'modal-body' : undefined}>
+      <PatientFormSection
+        entry={isEntry}
+        step={2}
+        title="Personal details"
+        subtitle="Contact information and demographics"
+        icon={User}
+      >
+        {!isEntry && (
           <div className="form-two-col">
+            {!draft.homeVisitDetails ? (
+              <label>
+                Clinic <span className="required">*</span>
+                <select required value={draft.clinicId ?? ''} onChange={(e) => setDraft({ ...draft, clinicId: e.target.value })}>
+                  {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </label>
+            ) : (
+              <div className="home-no-clinic-note">
+                <Home size={15} />
+                Home-visit patient — no clinic assignment required
+              </div>
+            )}
             <label>
-              Caregiver name
-              <input
-                value={draft.homeVisitDetails.caregiverName}
-                onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverName: e.target.value } })}
-                placeholder="Name of the primary caregiver"
-              />
-            </label>
-            <label>
-              Relation to patient
-              <input
-                value={draft.homeVisitDetails.caregiverRelation}
-                onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverRelation: e.target.value } })}
-                placeholder="e.g. Son, Spouse, Parent…"
-              />
-            </label>
-            <label>
-              Caregiver phone
-              <input
-                type="tel"
-                value={draft.homeVisitDetails.caregiverPhone ?? ''}
-                onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverPhone: e.target.value } })}
-                placeholder="Caregiver contact number"
-              />
-            </label>
-            <label>
-              Condition / case summary
-              <input
-                value={draft.homeVisitDetails.condition}
-                onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, condition: e.target.value } })}
-                placeholder="e.g. Post-discectomy recovery"
-              />
-            </label>
-            <label>
-              Home visit started
-              <input
-                type="date"
-                value={draft.homeVisitDetails.homeVisitStartDate ?? ''}
-                onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, homeVisitStartDate: e.target.value } })}
-              />
-            </label>
-            <label>
-              Discharge date
-              <input
-                type="date"
-                value={draft.homeVisitDetails.dischargeDate}
-                onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, dischargeDate: e.target.value } })}
-              />
+              Gender
+              <select value={draft.gender} onChange={(e) => setDraft({ ...draft, gender: e.target.value as Patient['gender'] })}>
+                {genderOptions.map((g) => <option key={g}>{g}</option>)}
+              </select>
             </label>
           </div>
         )}
+
+        {isEntry && (
+          <div className="pe-field-block">
+            <span className="pe-field-label">Gender</span>
+            <div className="pe-gender-pills">
+              {genderOptions.map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  className={`pe-gender-pill${draft.gender === g ? ' active' : ''}`}
+                  onClick={() => setDraft({ ...draft, gender: g })}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="form-two-col">
+          <label>
+            Full name <span className="required">*</span>
+            <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Patient full name" />
+          </label>
+          <label>
+            Phone <span className="required">*</span>
+            <input required type="tel" value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} placeholder="+91 …" />
+          </label>
+          <label>
+            Date of birth <span className="required">*</span>
+            <input required type="date" value={draft.dateOfBirth} onChange={(e) => setDraft({ ...draft, dateOfBirth: e.target.value })} />
+            {draft.dateOfBirth && (
+              <span className="dob-age-hint">Age: <strong>{calculateAge(draft.dateOfBirth)} yrs</strong></span>
+            )}
+          </label>
+          <label>
+            Address
+            <input value={draft.address} onChange={(e) => setDraft({ ...draft, address: e.target.value })} placeholder="Street, city, pin code" />
+          </label>
+          <label>
+            Referral source
+            <input value={draft.referralSource} onChange={(e) => setDraft({ ...draft, referralSource: e.target.value })} placeholder="Doctor, walk-in, online…" />
+          </label>
+          <label>
+            Emergency contact
+            <input value={draft.emergencyContact} onChange={(e) => setDraft({ ...draft, emergencyContact: e.target.value })} placeholder="Name and phone" />
+          </label>
+        </div>
+      </PatientFormSection>
+
+      <PatientFormSection
+        entry={isEntry}
+        step={3}
+        title="Clinical overview"
+        subtitle="Signs, symptoms, diagnosis and history"
+        icon={Stethoscope}
+      >
+        <div className="form-two-col">
+          <label>
+            Signs
+            <textarea
+              value={draft.signs ?? ''}
+              onChange={(e) => setDraft({ ...draft, signs: e.target.value })}
+              placeholder="Observable clinical signs (e.g. swelling, tenderness, reduced ROM)"
+              rows={3}
+            />
+          </label>
+          <label>
+            Symptoms
+            <textarea
+              value={draft.symptoms ?? ''}
+              onChange={(e) => setDraft({ ...draft, symptoms: e.target.value })}
+              placeholder="Patient-reported symptoms (e.g. pain, stiffness, weakness)"
+              rows={3}
+            />
+          </label>
+        </div>
+
+        <label>
+          Diagnosis <span className="required">*</span>
+          <textarea required value={draft.diagnosis} onChange={(e) => setDraft({ ...draft, diagnosis: e.target.value })} placeholder="Primary diagnosis" />
+        </label>
+
+        <div className="form-two-col">
+          <label>
+            Complications (if any)
+            <textarea
+              rows={2}
+              placeholder="e.g. Diabetes, hypertension, neuropathy…"
+              value={draft.complications ?? ''}
+              onChange={(e) => setDraft({ ...draft, complications: e.target.value })}
+            />
+          </label>
+          <label>
+            Surgeries (if any)
+            <textarea
+              rows={2}
+              placeholder="e.g. ACL reconstruction March 2026, L4/L5 discectomy 2023…"
+              value={draft.surgeries ?? ''}
+              onChange={(e) => setDraft({ ...draft, surgeries: e.target.value })}
+            />
+          </label>
+        </div>
+
+        <label>
+          Notes
+          <textarea value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Additional clinical notes" />
+        </label>
+      </PatientFormSection>
+
+      {(draft.homeVisitDetails || !isEntry) && (
+        <PatientFormSection
+          entry={isEntry}
+          step={4}
+          title="Home visit details"
+          subtitle="Caregiver and visit schedule information"
+          icon={Home}
+        >
+          {!isEntry ? (
+            <div className="form-section">
+              <div className="form-section-header">
+                <h3 className="form-section-title"><Home size={15} /> Home visit details</h3>
+                {!draft.homeVisitDetails ? (
+                  <button
+                    type="button" className="ghost-button"
+                    onClick={() => setDraft({ ...draft, clinicId: null, homeVisitDetails: emptyHomeVisitDetails() })}
+                  >
+                    <Plus size={14} /> Enable
+                  </button>
+                ) : (
+                  <button
+                    type="button" className="ghost-button"
+                    onClick={() => setDraft({ ...draft, clinicId: clinics[0]?.id ?? '', homeVisitDetails: undefined })}
+                  >
+                    <X size={14} /> Remove
+                  </button>
+                )}
+              </div>
+              {draft.homeVisitDetails && (
+                <div className="form-two-col">
+                  <label>
+                    Caregiver name
+                    <input
+                      value={draft.homeVisitDetails.caregiverName}
+                      onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverName: e.target.value } })}
+                      placeholder="Name of the primary caregiver"
+                    />
+                  </label>
+                  <label>
+                    Relation to patient
+                    <input
+                      value={draft.homeVisitDetails.caregiverRelation}
+                      onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverRelation: e.target.value } })}
+                      placeholder="e.g. Son, Spouse, Parent…"
+                    />
+                  </label>
+                  <label>
+                    Caregiver phone
+                    <input
+                      type="tel"
+                      value={draft.homeVisitDetails.caregiverPhone ?? ''}
+                      onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverPhone: e.target.value } })}
+                      placeholder="Caregiver contact number"
+                    />
+                  </label>
+                  <label>
+                    Condition / case summary
+                    <input
+                      value={draft.homeVisitDetails.condition}
+                      onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, condition: e.target.value } })}
+                      placeholder="e.g. Post-discectomy recovery"
+                    />
+                  </label>
+                  <label>
+                    Home visit started
+                    <input
+                      type="date"
+                      value={draft.homeVisitDetails.homeVisitStartDate ?? ''}
+                      onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, homeVisitStartDate: e.target.value } })}
+                    />
+                  </label>
+                  <label>
+                    Discharge date
+                    <input
+                      type="date"
+                      value={draft.homeVisitDetails.dischargeDate}
+                      onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, dischargeDate: e.target.value } })}
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="form-two-col">
+              <label>
+                Caregiver name
+                <input
+                  value={draft.homeVisitDetails!.caregiverName}
+                  onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverName: e.target.value } })}
+                  placeholder="Name of the primary caregiver"
+                />
+              </label>
+              <label>
+                Relation to patient
+                <input
+                  value={draft.homeVisitDetails!.caregiverRelation}
+                  onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverRelation: e.target.value } })}
+                  placeholder="e.g. Son, Spouse, Parent…"
+                />
+              </label>
+              <label>
+                Caregiver phone
+                <input
+                  type="tel"
+                  value={draft.homeVisitDetails!.caregiverPhone ?? ''}
+                  onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverPhone: e.target.value } })}
+                  placeholder="Caregiver contact number"
+                />
+              </label>
+              <label>
+                Condition / case summary
+                <input
+                  value={draft.homeVisitDetails!.condition}
+                  onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, condition: e.target.value } })}
+                  placeholder="e.g. Post-discectomy recovery"
+                />
+              </label>
+              <label>
+                Home visit started
+                <input
+                  type="date"
+                  value={draft.homeVisitDetails!.homeVisitStartDate ?? ''}
+                  onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, homeVisitStartDate: e.target.value } })}
+                />
+              </label>
+              <label>
+                Discharge date
+                <input
+                  type="date"
+                  value={draft.homeVisitDetails!.dischargeDate}
+                  onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, dischargeDate: e.target.value } })}
+                />
+              </label>
+            </div>
+          )}
+        </PatientFormSection>
+      )}
+
+      <PatientFormSection
+        entry={isEntry}
+        step={draft.homeVisitDetails ? 5 : 4}
+        title="Reports"
+        subtitle="Upload scans, prescriptions or assessment documents"
+        icon={FileText}
+      >
+        {!isEntry ? (
+          <div className="form-section">
+            <h3 className="form-section-title"><FileText size={15} /> Reports</h3>
+            {reportsBlock}
+          </div>
+        ) : (
+          reportsBlock
+        )}
+      </PatientFormSection>
       </div>
 
-      {/* Reports section */}
-      <div className="form-section">
-        <h3 className="form-section-title"><FileText size={15} /> Reports</h3>
-        {(draft.reports ?? []).length > 0 && (
-          <div className="list">
-            {(draft.reports ?? []).map((report) => (
-              <div key={report.id} className="list-row compact report-row">
-                <span>
-                  <strong>{report.title}</strong>
-                  <small>{formatDate(report.date)}</small>
-                </span>
-                <button className="ghost-button icon-only" type="button" onClick={() => removeReport(report.id)} title="Remove">
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
+      <div className={isEntry ? 'pe-footer' : editing ? 'modal-footer' : 'button-row'}>
+        {isEntry && (
+          <div className="pe-footer-meta">
+            <Sparkles size={15} />
+            <span>{completion === 100 ? 'Ready to save' : `${completion}% complete — fill required fields to save`}</span>
           </div>
         )}
-        <div className="add-report-form">
-          <input
-            placeholder="Report title"
-            value={newReport.title}
-            onChange={(e) => setNewReport({ ...newReport, title: e.target.value })}
-          />
-          <input
-            type="date"
-            value={newReport.date}
-            onChange={(e) => setNewReport({ ...newReport, date: e.target.value })}
-          />
-          <input
-            placeholder="URL (optional)"
-            value={newReport.fileUrl ?? ''}
-            onChange={(e) => setNewReport({ ...newReport, fileUrl: e.target.value })}
-          />
-          <textarea
-            placeholder="Notes (optional)"
-            value={newReport.notes}
-            onChange={(e) => setNewReport({ ...newReport, notes: e.target.value })}
-          />
-          <button className="secondary-button" type="button" onClick={addReport}>
-            <Plus size={14} /> Add report
+        <div className={isEntry ? 'pe-footer-actions' : undefined}>
+          {(isEntry || editing) && (
+            <button className="ghost-button" type="button" onClick={onCancel}>
+              Cancel
+            </button>
+          )}
+          <button className="primary-button" type="submit">
+            {editing ? 'Save changes' : 'Add patient'}
           </button>
         </div>
-      </div>
-
-      <div className="button-row">
-        <button className="primary-button" type="submit">
-          {editing ? 'Save changes' : 'Add patient'}
-        </button>
-        {editing && (
-          <button className="ghost-button" type="button" onClick={onCancel}>Cancel</button>
-        )}
       </div>
     </form>
   );
@@ -2380,35 +3006,42 @@ function SessionsView({
   const totalRevenue = filteredSessions
     .filter((s) => s.status === 'completed' && s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const estimatedRevenue = filteredSessions
+    .filter((s) => s.status === 'scheduled' && s.amountCollected !== null)
+    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
 
   return (
     <>
       {/* Complete session modal */}
       {completingId && (
-        <div className="modal-backdrop">
-          <form className="modal-panel form-grid" onSubmit={submitCompletion}>
-            <PanelTitle title="Complete session" subtitle="Record treatment notes and payment" />
-            <label>
-              Treatment notes
-              <textarea
-                required
-                value={completionData.treatmentNotes}
-                onChange={(e) => setCompletionData({ ...completionData, treatmentNotes: e.target.value })}
-                placeholder="What was done in this session…"
-              />
-            </label>
-            <label>
-              Amount collected (₹)
-              <input
-                type="number" min="0" step="0.01"
-                value={completionData.amountCollected}
-                onChange={(e) => setCompletionData({ ...completionData, amountCollected: e.target.value })}
-                placeholder="0"
-              />
-            </label>
-            <div className="button-row">
-              <button className="primary-button" type="submit"><Check size={15} /> Mark complete</button>
-              <button className="ghost-button" type="button" onClick={() => setCompletingId(null)}><X size={15} /> Cancel</button>
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setCompletingId(null); }}>
+          <form className="modal-panel" style={{ maxWidth: 420 }} onSubmit={submitCompletion}>
+            <div className="modal-accent modal-accent-green" />
+            <div className="modal-header">
+              <div className="modal-header-icon">🏁</div>
+              <div>
+                <h3 className="modal-title">Complete session</h3>
+                <p className="modal-sub">Record treatment notes and payment</p>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setCompletingId(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <label>
+                Treatment notes <span className="required">*</span>
+                <textarea required rows={3} value={completionData.treatmentNotes}
+                  onChange={(e) => setCompletionData({ ...completionData, treatmentNotes: e.target.value })}
+                  placeholder="What was done in this session…" />
+              </label>
+              <label>
+                Amount collected (₹)
+                <input type="number" min="0" step="0.01" value={completionData.amountCollected}
+                  onChange={(e) => setCompletionData({ ...completionData, amountCollected: e.target.value })}
+                  placeholder="0" />
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setCompletingId(null)}><X size={14} /> Cancel</button>
+              <button className="primary-button" type="submit"><Check size={14} /> Mark complete</button>
             </div>
           </form>
         </div>
@@ -2435,11 +3068,14 @@ function SessionsView({
 
       <div className="content-stack">
         {/* Summary metrics */}
-        <section className="metric-grid">
-          <MetricCard icon={Users}        label="Patients"    value={patientGroups.length.toString()}   accent="teal" />
-          <MetricCard icon={Activity}     label="Scheduled"   value={totalScheduled.toString()}          accent="blue" />
-          <MetricCard icon={Check}        label="Completed"   value={totalCompleted.toString()}          accent="green" />
-          <MetricCard icon={DollarSign}   label="Revenue"     value={formatCurrency(totalRevenue)}       accent="amber" />
+        <section className="metric-grid metric-grid-5">
+          <MetricCard icon={Users}        label="Patients"           value={patientGroups.length.toString()}   accent="teal" />
+          <MetricCard icon={Activity}     label="Scheduled"          value={totalScheduled.toString()}          accent="blue" />
+          <MetricCard icon={Check}        label="Completed"          value={totalCompleted.toString()}          accent="green" />
+          <MetricCard icon={DollarSign}   label="Actual revenue"     value={formatCurrency(totalRevenue)}       accent="green"
+            sub="Completed with payment" />
+          <MetricCard icon={TrendingUp}   label="Estimated revenue"  value={estimatedRevenue > 0 ? formatCurrency(estimatedRevenue) : '—'}
+            accent="blue" sub="Scheduled (pre-set amount)" />
         </section>
 
         <section className="panel">
@@ -2551,8 +3187,10 @@ function SessionsView({
                                     </div>
                                     <div className="group-session-right">
                                       <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
-                                      {session.amountCollected !== null && session.status === 'completed' && (
-                                        <span className="revenue-badge">{formatCurrency(session.amountCollected)}</span>
+                                      {session.amountCollected !== null && (
+                                        <span className={`revenue-badge${session.status === 'scheduled' ? ' est' : ''}`}>
+                                          {session.status === 'scheduled' ? 'Est. ' : ''}{formatCurrency(session.amountCollected)}
+                                        </span>
                                       )}
                                     </div>
                                     <div className="group-session-actions">
@@ -2690,23 +3328,46 @@ function HomeVisitsView({
     };
   }).sort((a, b) => (a.patient?.name ?? '').localeCompare(b.patient?.name ?? ''));
 
+  // Which patient cards are expanded to show sessions
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpand = (id: string) =>
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
   return (
     <div className="content-stack">
       {completingId && (
-        <div className="modal-backdrop">
-          <form className="modal-panel form-grid" onSubmit={submitCompletion}>
-            <PanelTitle title="Complete home visit" subtitle="Record treatment notes and amount collected" />
-            <label>
-              Treatment notes
-              <textarea required value={completionData.treatmentNotes} onChange={(e) => setCompletionData({ ...completionData, treatmentNotes: e.target.value })} />
-            </label>
-            <label>
-              Amount collected (₹)
-              <input type="number" min="0" step="0.01" value={completionData.amountCollected} onChange={(e) => setCompletionData({ ...completionData, amountCollected: e.target.value })} />
-            </label>
-            <div className="button-row">
-              <button className="primary-button" type="submit"><Check size={15} /> Mark complete</button>
-              <button className="ghost-button" type="button" onClick={() => setCompletingId(null)}><X size={15} /> Cancel</button>
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setCompletingId(null); }}>
+          <form className="modal-panel" style={{ maxWidth: 420 }} onSubmit={submitCompletion}>
+            <div className="modal-accent modal-accent-teal" />
+            <div className="modal-header">
+              <div className="modal-header-icon"><Home size={18} /></div>
+              <div>
+                <h3 className="modal-title">Complete home visit</h3>
+                <p className="modal-sub">Record treatment notes and amount collected</p>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setCompletingId(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <label>
+                Treatment notes <span className="required">*</span>
+                <textarea required rows={3} value={completionData.treatmentNotes}
+                  onChange={(e) => setCompletionData({ ...completionData, treatmentNotes: e.target.value })}
+                  placeholder="What was done in this visit…" />
+              </label>
+              <label>
+                Amount collected (₹)
+                <input type="number" min="0" step="0.01" value={completionData.amountCollected}
+                  onChange={(e) => setCompletionData({ ...completionData, amountCollected: e.target.value })}
+                  placeholder="0" />
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setCompletingId(null)}><X size={14} /> Cancel</button>
+              <button className="primary-button" type="submit"><Check size={14} /> Mark complete</button>
             </div>
           </form>
         </div>
@@ -2775,57 +3436,124 @@ function HomeVisitsView({
       </section>
 
       <section className="panel">
-        <PanelTitle title="Home visits by patient" subtitle={`${homeSessions.length} scheduled or recorded visits`} />
+        <PanelTitle
+          title="Home visit patients"
+          subtitle={`${groups.length} patient${groups.length !== 1 ? 's' : ''} · ${homeSessions.length} total visits`}
+        />
         {groups.length === 0 ? (
           <EmptyState message="No home visits scheduled yet" />
         ) : (
-          <div className="patient-session-groups">
-            {groups.map(({ patient, patientId: groupPatientId, sessions, total, scheduled, completed, missed, next }) => (
-              <div key={groupPatientId} className="patient-session-group">
-                <button className="patient-group-header" type="button" onClick={() => patient && onOpenPatient(patient.id)}>
-                  <span className="patient-group-avatar">{(patient?.name ?? '?').charAt(0)}</span>
-                  <div className="patient-group-info">
-                    <strong>{patient?.name ?? 'Unknown patient'}</strong>
-                    <small>{next ? `Next: ${formatDateTime(next.scheduledAt)}` : 'No upcoming home visit'}</small>
-                  </div>
-                  <div className="patient-group-stats">
-                    <span className="pg-stat total"><Home size={12} />{total}</span>
-                    <span className="pg-stat scheduled"><Activity size={12} />{scheduled}</span>
-                    <span className="pg-stat completed"><Check size={12} />{completed}</span>
-                    {missed > 0 && <span className="pg-stat cancelled"><X size={12} />{missed}</span>}
-                  </div>
-                </button>
-                <div className="patient-group-sessions">
-                  {sessions.map((session) => (
-                    <div key={session.id} className="group-session-row">
-                      <div className="group-session-badges">
-                        <span className="badge badge-amber"><Home size={10} /> Home</span>
-                        <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
+          <div className="hv-patient-list">
+            {groups.map(({ patient, patientId: gpId, sessions, total, scheduled, completed, missed, next }) => {
+              const isOpen = expandedIds.has(gpId);
+              const hvd = patient?.homeVisitDetails;
+              const age = patient?.dateOfBirth
+                ? `${Math.floor((Date.now() - new Date(patient.dateOfBirth).getTime()) / (365.25 * 24 * 3600 * 1000))} yrs`
+                : null;
+
+              return (
+                <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}`}>
+                  {/* ── Collapsed header (always visible) ── */}
+                  <div className="hv-card-header">
+                    <div className="hv-card-avatar">{(patient?.name ?? '?').charAt(0).toUpperCase()}</div>
+
+                    <div className="hv-card-main">
+                      <div className="hv-card-name-row">
+                        <span className="hv-card-name">{patient?.name ?? 'Unknown patient'}</span>
+                        {patient?.gender && <span className="hv-detail-chip">{patient.gender}</span>}
+                        {age && <span className="hv-detail-chip">{age}</span>}
+                        {hvd?.condition && <span className="hv-detail-chip hv-chip-condition">{hvd.condition}</span>}
                       </div>
-                      <div className="group-session-info">
-                        <strong>{session.therapyType}</strong>
-                        <small className="session-slot-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</small>
-                        {session.notes && <p className="clinical-note">{session.notes}</p>}
-                      </div>
-                      <div className="group-session-right">
-                        <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
-                        {session.amountCollected !== null && <span className="revenue-badge">{formatCurrency(session.amountCollected)}</span>}
-                      </div>
-                      <div className="group-session-actions">
-                        {session.status === 'scheduled' && (
-                          <>
-                            <button className="primary-button icon-only" title="Mark complete" onClick={() => { setCompletingId(session.id); setCompletionData({ treatmentNotes: session.treatmentNotes ?? '', amountCollected: session.amountCollected?.toString() ?? '' }); }}><Check size={13} /></button>
-                            <button className="ghost-button icon-only" title="No show" onClick={() => onChangeStatus(session.id, 'no_show')}>NS</button>
-                            <button className="ghost-button icon-only" title="Cancel" onClick={() => onChangeStatus(session.id, 'cancelled')}><X size={13} /></button>
-                          </>
+
+                      <div className="hv-card-meta-row">
+                        {patient?.phone && (
+                          <span className="hv-meta-item"><Phone size={11} /> {patient.phone}</span>
                         )}
-                        <button className="danger-button icon-only" title="Delete" onClick={() => onDeleteSession(session.id)}><Trash2 size={13} /></button>
+                        {hvd?.homeVisitStartDate && (
+                          <span className="hv-meta-item"><Calendar size={11} /> Since {hvd.homeVisitStartDate}</span>
+                        )}
+                        {hvd?.caregiverName && (
+                          <span className="hv-meta-item"><UserCheck size={11} /> {hvd.caregiverName}
+                            {hvd.caregiverRelation ? ` (${hvd.caregiverRelation})` : ''}
+                            {hvd.caregiverPhone ? ` · ${hvd.caregiverPhone}` : ''}
+                          </span>
+                        )}
+                        {next
+                          ? <span className="hv-meta-item hv-meta-next"><Activity size={11} /> Next: {formatDateTime(next.scheduledAt)}</span>
+                          : <span className="hv-meta-item hv-meta-none">No upcoming visit</span>
+                        }
                       </div>
                     </div>
-                  ))}
+
+                    {/* Stats */}
+                    <div className="hv-card-stats">
+                      <div className="hv-stat-pill hv-stat-total"><Home size={11} />{total}</div>
+                      <div className="hv-stat-pill hv-stat-sched"><Activity size={11} />{scheduled}</div>
+                      <div className="hv-stat-pill hv-stat-done"><Check size={11} />{completed}</div>
+                      {missed > 0 && <div className="hv-stat-pill hv-stat-miss"><X size={11} />{missed}</div>}
+                    </div>
+
+                    {/* Controls */}
+                    <div className="hv-card-controls">
+                      <button className="ghost-button icon-only" title="Open patient record"
+                        onClick={(e) => { e.stopPropagation(); patient && onOpenPatient(patient.id); }}>
+                        <ExternalLink size={13} />
+                      </button>
+                      <button
+                        className={`hv-expand-btn${isOpen ? ' open' : ''}`}
+                        type="button"
+                        title={isOpen ? 'Collapse sessions' : `Show ${total} session${total !== 1 ? 's' : ''}`}
+                        onClick={() => toggleExpand(gpId)}>
+                        <ChevronRight size={15} className={`hv-chevron${isOpen ? ' rotated' : ''}`} />
+                        <span>{isOpen ? 'Hide' : `${total} session${total !== 1 ? 's' : ''}`}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ── Expanded sessions ── */}
+                  {isOpen && (
+                    <div className="hv-sessions-body">
+                      {sessions.map((session) => (
+                        <div key={session.id} className="hv-session-row">
+                          <div className="hv-session-left">
+                            <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
+                            <div className="hv-session-info">
+                              <span className="hv-session-type">{session.therapyType}</span>
+                              <span className="hv-session-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</span>
+                              {session.notes && <span className="hv-session-note">{session.notes}</span>}
+                            </div>
+                          </div>
+                          <div className="hv-session-right">
+                            <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
+                            {session.amountCollected !== null && (
+                              <span className={`revenue-badge${session.status === 'scheduled' ? ' est' : ''}`}>
+                                {session.status === 'scheduled' ? 'Est. ' : ''}{formatCurrency(session.amountCollected)}
+                              </span>
+                            )}
+                            <div className="hv-session-actions">
+                              {session.status === 'scheduled' && (
+                                <>
+                                  <button className="primary-button icon-only" title="Mark complete"
+                                    onClick={() => { setCompletingId(session.id); setCompletionData({ treatmentNotes: session.treatmentNotes ?? '', amountCollected: session.amountCollected?.toString() ?? '' }); }}>
+                                    <Check size={12} />
+                                  </button>
+                                  <button className="ghost-button icon-only" title="No show"
+                                    onClick={() => onChangeStatus(session.id, 'no_show')}>NS</button>
+                                  <button className="ghost-button icon-only" title="Cancel"
+                                    onClick={() => onChangeStatus(session.id, 'cancelled')}><X size={12} /></button>
+                                </>
+                              )}
+                              <button className="danger-button icon-only" title="Delete"
+                                onClick={() => onDeleteSession(session.id)}><Trash2 size={12} /></button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>
@@ -2868,54 +3596,52 @@ function EditSessionModal({
 
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="modal-panel form-grid" onSubmit={handleSubmit}>
+      <form className="modal-panel" style={{ maxWidth: 440 }} onSubmit={handleSubmit}>
+        <div className="modal-accent modal-accent-violet" />
         <div className="modal-header">
+          <div className="modal-header-icon"><ClipboardList size={18} /></div>
           <div>
             <h3 className="modal-title">Edit session</h3>
-            <p className="modal-sub">{patient?.name ?? 'Unknown'} · scheduled</p>
+            <p className="modal-sub">{patient?.name ?? 'Unknown'}</p>
           </div>
           <button type="button" className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
-
-        <label>
-          Therapy type <span className="required">*</span>
-          <TherapyTypeSelect required value={form.therapyType} onChange={(v) => set('therapyType', v)} />
-        </label>
-
-        <label>
-          Date &amp; time
-          <input type="datetime-local" value={form.scheduledAt} onChange={(e) => set('scheduledAt', e.target.value)} />
-        </label>
-
-        <label>
-          Session type
-          <div className="toggle-row">
-            {(['clinic', 'home'] as SessionType[]).map((t) => (
-              <button key={t} type="button" className={`toggle-btn ${form.sessionType === t ? 'active' : ''}`} onClick={() => set('sessionType', t)}>
-                {t === 'clinic' ? <Stethoscope size={13} /> : <Home size={13} />}
-                {t === 'clinic' ? 'Clinic' : 'Home visit'}
-              </button>
-            ))}
-          </div>
-        </label>
-
-        <label>
-          Therapy level
-          <div className="toggle-row">
-            {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
-              <button key={lvl} type="button" className={`toggle-btn level-${lvl} ${form.therapyLevel === lvl ? 'active' : ''}`} onClick={() => set('therapyLevel', lvl)}>
-                {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-              </button>
-            ))}
-          </div>
-        </label>
-
-        <label>
-          Notes
-          <textarea rows={2} value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Any notes for this session…" />
-        </label>
-
-        <div className="button-row modal-footer-row">
+        <div className="modal-body">
+          <label>
+            Therapy type <span className="required">*</span>
+            <TherapyTypeSelect required value={form.therapyType} onChange={(v) => set('therapyType', v)} />
+          </label>
+          <label>
+            Date &amp; time
+            <input type="datetime-local" value={form.scheduledAt} onChange={(e) => set('scheduledAt', e.target.value)} />
+          </label>
+          <label>
+            Session type
+            <div className="toggle-row">
+              {(['clinic', 'home'] as SessionType[]).map((t) => (
+                <button key={t} type="button" className={`toggle-btn ${form.sessionType === t ? 'active' : ''}`} onClick={() => set('sessionType', t)}>
+                  {t === 'clinic' ? <Stethoscope size={13} /> : <Home size={13} />}
+                  {t === 'clinic' ? 'Clinic' : 'Home visit'}
+                </button>
+              ))}
+            </div>
+          </label>
+          <label>
+            Therapy level
+            <div className="toggle-row">
+              {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
+                <button key={lvl} type="button" className={`toggle-btn level-${lvl} ${form.therapyLevel === lvl ? 'active' : ''}`} onClick={() => set('therapyLevel', lvl)}>
+                  {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
+                </button>
+              ))}
+            </div>
+          </label>
+          <label>
+            Notes
+            <textarea rows={2} value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Any notes for this session…" />
+          </label>
+        </div>
+        <div className="modal-footer">
           <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
           <button className="primary-button" type="submit"><Check size={14} /> Save changes</button>
         </div>
@@ -3027,8 +3753,10 @@ function RecordSessionModal({
 
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="modal-panel record-session-modal form-grid" onSubmit={handleSubmit}>
+      <form className="modal-panel record-session-modal" onSubmit={handleSubmit}>
+        <div className="modal-accent" />
         <div className="modal-header">
+          <div className="modal-header-icon"><Stethoscope size={18} /></div>
           <div>
             <h3 className="modal-title">Record session</h3>
             <p className="modal-sub">Log a walk-in or already-completed session</p>
@@ -3130,9 +3858,9 @@ function RecordSessionModal({
           </div>
         </div>
 
-        <div className="button-row modal-footer-row">
-          <button className="ghost-button" type="button" onClick={onClose}><X size={15} /> Cancel</button>
-          <button className="primary-button" type="submit"><Check size={15} /> Save session</button>
+        <div className="modal-footer">
+          <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
+          <button className="primary-button" type="submit"><Check size={14} /> Save session</button>
         </div>
       </form>
     </div>
@@ -3506,7 +4234,7 @@ function ScheduleNewPage({
               <div className="preview-total">
                 <strong>Total estimated cost:</strong>{' '}
                 {amountPerSession
-                  ? formatCurrency(parseFloat(amountPerSession) * previewDates.length)
+                  ? formatCurrency(parseFloat(amountPerSession) * previewDates.length * (dualTherapy ? 2 : 1))
                   : '—'}
               </div>
 
@@ -3753,25 +4481,23 @@ function CalendarView({
       {/* ── Quick-schedule modal ── */}
       {booking && (
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setBooking(null); }}>
-          <form className="bk-modal" onSubmit={submitBooking}>
-
-            {/* Coloured header strip */}
-            <div className="bk-modal-header">
-              <div className="bk-modal-icon">
+          <form className="modal-panel bk-modal" onSubmit={submitBooking}>
+            <div className="modal-accent modal-accent-teal" />
+            <div className="modal-header">
+              <div className="modal-header-icon">
                 {bkSessionType === 'home' ? <Home size={18} /> : <Stethoscope size={18} />}
               </div>
-              <div className="bk-modal-title-block">
-                <h3 className="bk-modal-title">Book slot</h3>
-                <p className="bk-modal-sub">
+              <div>
+                <h3 className="modal-title">Book slot</h3>
+                <p className="modal-sub">
                   {new Intl.DateTimeFormat('en', { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(booking.date + 'T12:00'))}
                   {' · '}{booking.time}
                 </p>
               </div>
-              <button type="button" className="bk-close-btn" onClick={() => setBooking(null)}><X size={16} /></button>
+              <button type="button" className="icon-btn" onClick={() => setBooking(null)}><X size={18} /></button>
             </div>
 
             <div className="bk-modal-body">
-              {/* Session type */}
               <div className="bk-field">
                 <span className="bk-label">Session type</span>
                 <div className="toggle-row">
@@ -3795,7 +4521,6 @@ function CalendarView({
                 </div>
               </div>
 
-              {/* Clinic (only for clinic sessions, admin) */}
               {bkSessionType === 'clinic' && currentUser.role === 'admin' && (
                 <div className="bk-field">
                   <span className="bk-label">Clinic</span>
@@ -3808,7 +4533,6 @@ function CalendarView({
                 </div>
               )}
 
-              {/* Patient */}
               <div className="bk-field">
                 <span className="bk-label">Patient <span className="required">*</span></span>
                 <select required value={bkPatient} onChange={(e) => setBkPatient(e.target.value)}>
@@ -3820,13 +4544,11 @@ function CalendarView({
                 </select>
               </div>
 
-              {/* Therapy type */}
               <div className="bk-field">
                 <span className="bk-label">Therapy type <span className="required">*</span></span>
                 <TherapyTypeSelect required value={bkTherapy} onChange={setBkTherapy} />
               </div>
 
-              {/* Therapy level */}
               <div className="bk-field">
                 <span className="bk-label">Therapy level</span>
                 <div className="toggle-row">
@@ -3840,11 +4562,9 @@ function CalendarView({
               </div>
             </div>
 
-            <div className="bk-modal-footer">
-              <button type="submit" className="primary-button">
-                <CalendarDays size={14} /> Schedule
-              </button>
+            <div className="modal-footer">
               <button type="button" className="ghost-button" onClick={() => setBooking(null)}>Cancel</button>
+              <button type="submit" className="primary-button"><CalendarDays size={14} /> Schedule</button>
             </div>
           </form>
         </div>
@@ -4089,8 +4809,10 @@ function ClinicsView({
       {/* ── Add / Edit modal ── */}
       {showModal && (
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}>
-          <form className="modal-panel form-grid clinic-modal" onSubmit={submit}>
+          <form className="modal-panel clinic-modal" onSubmit={submit}>
+            <div className="modal-accent modal-accent-green" />
             <div className="modal-header">
+              <div className="modal-header-icon"><Building2 size={18} /></div>
               <div>
                 <h3 className="modal-title">{editingId ? 'Edit clinic' : 'Add new clinic'}</h3>
                 <p className="modal-sub">{editingId ? 'Update clinic details and staff assignment' : 'Register a new clinic location'}</p>
@@ -4130,7 +4852,7 @@ function ClinicsView({
               </div>
             )}
 
-            <div className="button-row modal-footer-row">
+            <div className="modal-footer">
               <button className="ghost-button" type="button" onClick={closeModal}><X size={14} /> Cancel</button>
               <button className="primary-button" type="submit">
                 {editingId ? <><Check size={14} /> Save changes</> : <><Plus size={14} /> Add clinic</>}
@@ -4227,6 +4949,12 @@ function ClinicsView({
 type StaffDraft = { name: string; email: string; password: string; phone: string; title: string; clinicId: string; role: Role; status: StaffStatus };
 const emptyStaff = (): StaffDraft => ({ name: '', email: '', password: '', phone: '', title: '', clinicId: '', role: 'staff', status: 'active' });
 
+const JOB_TITLES = [
+  'Consultant Physiotherapist',
+  'Assistant Physiotherapist',
+  'Intern',
+];
+
 function StaffView({
   profiles, clinics, onUpdateProfile, onAddProfile, onDeleteProfile,
 }: {
@@ -4240,6 +4968,7 @@ function StaffView({
   const [draft, setDraft] = useState<StaffDraft>(emptyStaff);
   const [showPassword, setShowPassword] = useState(false);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
+  const [customTitle, setCustomTitle] = useState(false);
 
   const generatePassword = () => {
     const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789!@#';
@@ -4249,11 +4978,20 @@ function StaffView({
 
   const startEdit = (p: Profile) => {
     setEditingProfile(p);
+    const isPreset = JOB_TITLES.includes(p.title);
+    setCustomTitle(!isPreset && !!p.title);
     setDraft({ name: p.name, email: p.email, password: '', phone: p.phone, title: p.title, clinicId: p.clinicId ?? '', role: p.role, status: p.status });
     setShowForm(true);
   };
 
-  const cancelForm = () => { setShowForm(false); setDraft(emptyStaff()); setEditingProfile(null); };
+  const openAdd = () => {
+    setEditingProfile(null);
+    setCustomTitle(false);
+    setDraft(emptyStaff());
+    setShowForm(true);
+  };
+
+  const cancelForm = () => { setShowForm(false); setDraft(emptyStaff()); setEditingProfile(null); setCustomTitle(false); };
 
   const submitForm = (e: FormEvent) => {
     e.preventDefault();
@@ -4265,135 +5003,193 @@ function StaffView({
     cancelForm();
   };
 
-  const pending = profiles.filter((p) => p.status === 'pending');
-  const active  = profiles.filter((p) => p.status === 'active');
+  const pending  = profiles.filter((p) => p.status === 'pending');
+  const active   = profiles.filter((p) => p.status === 'active');
   const inactive = profiles.filter((p) => p.status === 'inactive');
 
   return (
-    <div className="workspace-grid">
-      {/* Staff list */}
-      <div className="content-stack">
-        {pending.length > 0 && (
-          <section className="panel">
-            <PanelTitle title="Pending approval" subtitle="These accounts are waiting to be activated" />
-            <div className="staff-cards">
-              {pending.map((p) => <StaffCard key={p.id} profile={p} clinics={clinics} onUpdate={onUpdateProfile} onEdit={startEdit} onDelete={onDeleteProfile} />)}
-            </div>
-          </section>
-        )}
-        <section className="panel">
-          <div className="toolbar">
-            <PanelTitle title="All staff" subtitle={`${profiles.length} account${profiles.length !== 1 ? 's' : ''}`} />
-            <button className="primary-button" onClick={() => { setShowForm(true); setEditingProfile(null); setDraft(emptyStaff()); }}>
-              <Plus size={16} /> Add staff
-            </button>
-          </div>
-          {active.length > 0 && (
-            <>
-              <p className="staff-section-label">Active</p>
-              <div className="staff-cards">
-                {active.map((p) => <StaffCard key={p.id} profile={p} clinics={clinics} onUpdate={onUpdateProfile} onEdit={startEdit} onDelete={onDeleteProfile} />)}
-              </div>
-            </>
-          )}
-          {inactive.length > 0 && (
-            <>
-              <p className="staff-section-label muted">Inactive</p>
-              <div className="staff-cards">
-                {inactive.map((p) => <StaffCard key={p.id} profile={p} clinics={clinics} onUpdate={onUpdateProfile} onEdit={startEdit} onDelete={onDeleteProfile} />)}
-              </div>
-            </>
-          )}
-        </section>
-      </div>
-
-      {/* Add / Edit form */}
+    <div className="content-stack">
+      {/* ── Staff modal ── */}
       {showForm && (
-        <form className="panel form-grid staff-form" onSubmit={submitForm}>
-          <div className="modal-header">
-            <div>
-              <h3 className="modal-title">{editingProfile ? 'Edit staff member' : 'Add new staff'}</h3>
-              <p className="modal-sub">{editingProfile ? 'Update account details' : 'Create a login and set up their access'}</p>
-            </div>
-            <button type="button" className="icon-btn" onClick={cancelForm}><X size={18} /></button>
-          </div>
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) cancelForm(); }}>
+          <form className="modal-panel staff-modal" onSubmit={submitForm}>
+            {/* Coloured accent strip */}
+            <div className="staff-modal-accent" />
 
-          <div className="form-two-col">
-            <label>Full name <span className="required">*</span>
-              <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Dr. Jane Smith" />
-            </label>
-            <label>Job title <span className="required">*</span>
-              <input required value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="Physiotherapist" />
-            </label>
-            <label>Email <span className="required">*</span>
-              <input required type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} placeholder="staff@clinic.com" />
-            </label>
-            <label>Phone
-              <input type="tel" value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} placeholder="+1 555 0000" />
-            </label>
-          </div>
-
-          {!editingProfile && (
-            <label>
-              Password <span className="required">*</span>
-              <div className="password-field-row">
-                <div className="password-input-wrap">
-                  <input
-                    required
-                    type={showPassword ? 'text' : 'password'}
-                    value={draft.password}
-                    onChange={(e) => setDraft({ ...draft, password: e.target.value })}
-                    placeholder="Set a login password"
-                    autoComplete="new-password"
-                  />
-                  <button type="button" className="pw-toggle" onClick={() => setShowPassword((v) => !v)}>
-                    {showPassword ? 'Hide' : 'Show'}
-                  </button>
+            {/* Header */}
+            <div className="staff-modal-header">
+              <div className="staff-modal-avatar-wrap">
+                <div className="staff-modal-avatar">
+                  {draft.name ? draft.name.charAt(0).toUpperCase() : <UserCheck size={20} />}
                 </div>
-                <button type="button" className="ghost-button" onClick={generatePassword}>
-                  Generate
-                </button>
               </div>
-              {draft.password && (
-                <small className="pw-strength">Password set — share securely with the staff member</small>
-              )}
-            </label>
-          )}
+              <div className="staff-modal-titles">
+                <h3>{editingProfile ? 'Edit staff member' : 'Add new staff'}</h3>
+                <p>{editingProfile ? 'Update account details and access' : 'Create a login and set up clinic access'}</p>
+              </div>
+              <button type="button" className="icon-btn" onClick={cancelForm}><X size={18} /></button>
+            </div>
 
-          <div className="form-two-col">
-            <label>
-              Role
-              <select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })}>
-                <option value="staff">Staff</option>
-                <option value="admin">Admin</option>
-              </select>
-            </label>
-            <label>
-              Status
-              <select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value as StaffStatus })}>
-                <option value="active">Active</option>
-                <option value="pending">Pending</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </label>
-          </div>
+            {/* Section: Personal info */}
+            <div className="staff-modal-section">
+              <span className="staff-modal-section-label">Personal info</span>
+              <div className="form-two-col">
+                <label style={{ gridColumn: '1 / -1' }}>Full name <span className="required">*</span>
+                  <input required value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    placeholder="e.g. Dr. Priya Sharma" />
+                </label>
+                <label>Job title <span className="required">*</span>
+                  {customTitle ? (
+                    <div className="staff-title-custom-row">
+                      <input required value={draft.title}
+                        onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                        placeholder="Custom job title" />
+                      <button type="button" className="ghost-button"
+                        onClick={() => { setCustomTitle(false); setDraft((d) => ({ ...d, title: '' })); }}>
+                        <ChevronRight size={13} style={{ transform: 'rotate(180deg)' }} /> Preset
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="staff-title-select-row">
+                      <select required value={draft.title}
+                        onChange={(e) => setDraft({ ...draft, title: e.target.value })}>
+                        <option value="">— Select title —</option>
+                        {JOB_TITLES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <button type="button" className="ghost-button"
+                        onClick={() => { setCustomTitle(true); setDraft((d) => ({ ...d, title: '' })); }}>
+                        Custom
+                      </button>
+                    </div>
+                  )}
+                </label>
+                <label>Phone
+                  <input type="tel" value={draft.phone}
+                    onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
+                    placeholder="+91 98765 00000" />
+                </label>
+              </div>
+            </div>
 
-          <label>
-            Clinic assignment
-            <select value={draft.clinicId} onChange={(e) => setDraft({ ...draft, clinicId: e.target.value })}>
-              <option value="">— All clinics (admin scope) —</option>
-              {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </label>
+            {/* Section: Login credentials */}
+            <div className="staff-modal-section">
+              <span className="staff-modal-section-label">Login credentials</span>
+              <div className="form-two-col">
+                <label style={{ gridColumn: '1 / -1' }}>Email <span className="required">*</span>
+                  <input required type="email" value={draft.email}
+                    onChange={(e) => setDraft({ ...draft, email: e.target.value })}
+                    placeholder="staff@clinic.com" />
+                </label>
+                {!editingProfile && (
+                  <label style={{ gridColumn: '1 / -1' }}>Password <span className="required">*</span>
+                    <div className="password-field-row">
+                      <div className="password-input-wrap">
+                        <input required
+                          type={showPassword ? 'text' : 'password'}
+                          value={draft.password}
+                          onChange={(e) => setDraft({ ...draft, password: e.target.value })}
+                          placeholder="Set a login password"
+                          autoComplete="new-password" />
+                        <button type="button" className="pw-toggle"
+                          onClick={() => setShowPassword((v) => !v)}>
+                          {showPassword ? 'Hide' : 'Show'}
+                        </button>
+                      </div>
+                      <button type="button" className="ghost-button" onClick={generatePassword}>
+                        Generate
+                      </button>
+                    </div>
+                    {draft.password && (
+                      <small className="pw-strength">✓ Password set — share securely with the staff member</small>
+                    )}
+                  </label>
+                )}
+              </div>
+            </div>
 
-          <div className="button-row">
-            <button className="primary-button" type="submit">
-              {editingProfile ? 'Save changes' : <><Plus size={15} /> Create account</>}
-            </button>
-            <button className="ghost-button" type="button" onClick={cancelForm}><X size={14} /> Cancel</button>
-          </div>
-        </form>
+            {/* Section: Access & clinic */}
+            <div className="staff-modal-section">
+              <span className="staff-modal-section-label">Access &amp; clinic</span>
+              <div className="form-two-col">
+                <label>Role
+                  <div className="staff-role-toggle">
+                    {(['staff', 'admin'] as Role[]).map((r) => (
+                      <button key={r} type="button"
+                        className={`staff-role-btn${draft.role === r ? ' active' : ''}`}
+                        onClick={() => setDraft({ ...draft, role: r })}>
+                        {r === 'admin' ? '🔑 Admin' : '👤 Staff'}
+                      </button>
+                    ))}
+                  </div>
+                </label>
+                <label>Status
+                  <select value={draft.status}
+                    onChange={(e) => setDraft({ ...draft, status: e.target.value as StaffStatus })}>
+                    <option value="active">Active</option>
+                    <option value="pending">Pending</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </label>
+                <label style={{ gridColumn: '1 / -1' }}>Clinic assignment
+                  <select value={draft.clinicId}
+                    onChange={(e) => setDraft({ ...draft, clinicId: e.target.value })}>
+                    <option value="">— All clinics (admin scope) —</option>
+                    {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            {/* Footer actions */}
+            <div className="staff-modal-footer modal-footer" style={{ position: 'sticky', bottom: 0 }}>
+              <button type="button" className="ghost-button" onClick={cancelForm}><X size={14} /> Cancel</button>
+              <button type="submit" className="primary-button">
+                {editingProfile ? <><Check size={14} /> Save changes</> : <><Plus size={14} /> Create account</>}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
+
+      {/* ── Pending section ── */}
+      {pending.length > 0 && (
+        <section className="panel">
+          <PanelTitle title="Pending approval" subtitle="These accounts are waiting to be activated" />
+          <div className="staff-cards">
+            {pending.map((p) => <StaffCard key={p.id} profile={p} clinics={clinics} onUpdate={onUpdateProfile} onEdit={startEdit} onDelete={onDeleteProfile} />)}
+          </div>
+        </section>
+      )}
+
+      {/* ── All staff ── */}
+      <section className="panel">
+        <div className="toolbar">
+          <PanelTitle title="All staff" subtitle={`${profiles.length} account${profiles.length !== 1 ? 's' : ''}`} />
+          <button className="primary-button" onClick={openAdd}>
+            <Plus size={15} /> Add new staff
+          </button>
+        </div>
+        {active.length > 0 && (
+          <>
+            <p className="staff-section-label">Active</p>
+            <div className="staff-cards">
+              {active.map((p) => <StaffCard key={p.id} profile={p} clinics={clinics} onUpdate={onUpdateProfile} onEdit={startEdit} onDelete={onDeleteProfile} />)}
+            </div>
+          </>
+        )}
+        {inactive.length > 0 && (
+          <>
+            <p className="staff-section-label muted">Inactive</p>
+            <div className="staff-cards">
+              {inactive.map((p) => <StaffCard key={p.id} profile={p} clinics={clinics} onUpdate={onUpdateProfile} onEdit={startEdit} onDelete={onDeleteProfile} />)}
+            </div>
+          </>
+        )}
+        {profiles.length === 0 && (
+          <EmptyState message="No staff accounts yet. Click 'Add new staff' to create one." />
+        )}
+      </section>
     </div>
   );
 }
@@ -4663,6 +5459,517 @@ function TherapyTypeSelect({
   );
 }
 
+// ─── Expenses & Equipment View ────────────────────────────────────────────────
+
+const EXPENSE_CATEGORIES: ExpenseCategory[] = ['Rent', 'Utilities', 'Salaries', 'Supplies', 'Maintenance', 'Other'];
+const EXPENSE_RECURRENCES: ExpenseRecurrence[] = ['one-time', 'monthly', 'annual'];
+const EQUIPMENT_CATEGORIES: EquipmentCategory[] = ['Machine', 'Hand tool', 'Consumable', 'Furniture', 'Other'];
+const EQUIPMENT_CONDITIONS: EquipmentCondition[] = ['Good', 'Fair', 'Needs service', 'Retired'];
+
+/** Clinic-specific consumables preset list */
+const CLINIC_CONSUMABLES: { name: string; emoji: string }[] = [
+  { name: 'US Gel Bottles',            emoji: '🫙' },
+  { name: 'Tissue Rolls',              emoji: '🧻' },
+  { name: 'Adhesive Pads Packet',      emoji: '🩹' },
+  { name: 'Sanitizer',                 emoji: '🧴' },
+  { name: 'Disposable Cups',           emoji: '🥤' },
+  { name: 'Dry Needles Box (25mm)',     emoji: '💉' },
+  { name: 'Dry Needles Box (40mm)',     emoji: '💉' },
+  { name: 'Dry Needles Box (50mm)',     emoji: '💉' },
+  { name: 'Dry Needles Box (60mm)',     emoji: '💉' },
+  { name: 'Cotton Roll',               emoji: '☁️' },
+  { name: 'Sumo Gel',                  emoji: '🫧' },
+  { name: 'Micropore Tape',            emoji: '🩻' },
+  { name: 'Surgical Blades / Needles', emoji: '🔪' },
+];
+
+const emptyExpense = (clinicId: string): Omit<ClinicExpense, 'id'> => ({
+  clinicId, category: 'Supplies', amount: 0, date: todayStr, recurrence: 'one-time', notes: '',
+});
+const emptyEquipment = (clinicId: string): Omit<Equipment, 'id'> => ({
+  clinicId, name: '', category: 'Machine', purchaseDate: todayStr, purchaseCost: null,
+  condition: 'Good', serialNumber: '', notes: '',
+});
+
+function ExpensesView({
+  clinics, expenses, equipment,
+  onAddExpense, onUpdateExpense, onDeleteExpense,
+  onAddEquipment, onUpdateEquipment, onDeleteEquipment,
+}: {
+  clinics: Clinic[];
+  expenses: ClinicExpense[];
+  equipment: Equipment[];
+  onAddExpense: (e: Omit<ClinicExpense, 'id'>) => void;
+  onUpdateExpense: (e: ClinicExpense) => void;
+  onDeleteExpense: (id: string) => void;
+  onAddEquipment: (e: Omit<Equipment, 'id'>) => void;
+  onUpdateEquipment: (e: Equipment) => void;
+  onDeleteEquipment: (id: string) => void;
+}) {
+  const [tab, setTab] = useState<'expenses' | 'equipment'>('expenses');
+
+  // ── Expense state ──
+  const [expModal, setExpModal]   = useState(false);
+  const [expEditing, setExpEditing] = useState<ClinicExpense | null>(null);
+  const [expDraft, setExpDraft]   = useState<Omit<ClinicExpense, 'id'>>(emptyExpense(clinics[0]?.id ?? ''));
+  const [expFilterClinic, setExpFilterClinic] = useState('all');
+  const [expFilterCat, setExpFilterCat]       = useState<ExpenseCategory | 'all'>('all');
+  const [expSearch, setExpSearch] = useState('');
+
+  // ── Equipment state ──
+  const [eqModal, setEqModal]     = useState(false);
+  const [eqEditing, setEqEditing] = useState<Equipment | null>(null);
+  const [eqDraft, setEqDraft]     = useState<Omit<Equipment, 'id'>>(emptyEquipment(clinics[0]?.id ?? ''));
+  const [eqFilterClinic, setEqFilterClinic] = useState('all');
+  const [eqFilterCat, setEqFilterCat]       = useState<EquipmentCategory | 'all'>('all');
+  const [eqFilterCond, setEqFilterCond]     = useState<EquipmentCondition | 'all'>('all');
+  const [eqSearch, setEqSearch]   = useState('');
+
+  // ── Helpers ──
+  const clinicName = (id: string) => clinics.find((c) => c.id === id)?.name ?? '—';
+  const thisMonth = todayStr.slice(0, 7);
+  const thisYear  = todayStr.slice(0, 4);
+
+  // ── Expense derived ──
+  const filteredExp = expenses.filter((e) => {
+    if (expFilterClinic !== 'all' && e.clinicId !== expFilterClinic) return false;
+    if (expFilterCat !== 'all' && e.category !== expFilterCat) return false;
+    if (expSearch) {
+      const q = expSearch.toLowerCase();
+      if (!e.notes.toLowerCase().includes(q) && !e.category.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  }).sort((a, b) => b.date.localeCompare(a.date));
+
+  const totalThisMonth = expenses.filter((e) => e.date.startsWith(thisMonth)).reduce((s, e) => s + e.amount, 0);
+  const totalThisYear  = expenses.filter((e) => e.date.startsWith(thisYear)).reduce((s, e) => s + e.amount, 0);
+  const byCategory = EXPENSE_CATEGORIES.map((cat) => ({
+    cat, total: expenses.filter((e) => e.category === cat).reduce((s, e) => s + e.amount, 0),
+  })).filter((r) => r.total > 0);
+
+  // ── Equipment derived ──
+  const filteredEq = equipment.filter((e) => {
+    if (eqFilterClinic !== 'all' && e.clinicId !== eqFilterClinic) return false;
+    if (eqFilterCat !== 'all' && e.category !== eqFilterCat) return false;
+    if (eqFilterCond !== 'all' && e.condition !== eqFilterCond) return false;
+    if (eqSearch) {
+      const q = eqSearch.toLowerCase();
+      if (!e.name.toLowerCase().includes(q) && !e.serialNumber.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  }).sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate));
+
+  const totalItems  = equipment.length;
+  const totalValue  = equipment.reduce((s, e) => s + (e.purchaseCost ?? 0), 0);
+  const needsService = equipment.filter((e) => e.condition === 'Needs service').length;
+
+  // ── Expense handlers ──
+  const openAddExp = () => { setExpEditing(null); setExpDraft(emptyExpense(clinics[0]?.id ?? '')); setExpModal(true); };
+  const openEditExp = (e: ClinicExpense) => {
+    setExpEditing(e);
+    setExpDraft({ clinicId: e.clinicId, category: e.category, amount: e.amount, date: e.date, recurrence: e.recurrence, notes: e.notes });
+    setExpModal(true);
+  };
+  const submitExp = (ev: FormEvent) => {
+    ev.preventDefault();
+    if (expEditing) onUpdateExpense({ ...expDraft, id: expEditing.id });
+    else onAddExpense(expDraft);
+    setExpModal(false);
+  };
+
+  // ── Equipment handlers ──
+  const openAddEq = () => { setEqEditing(null); setEqDraft(emptyEquipment(clinics[0]?.id ?? '')); setEqModal(true); };
+  const openEditEq = (e: Equipment) => {
+    setEqEditing(e);
+    setEqDraft({ clinicId: e.clinicId, name: e.name, category: e.category, purchaseDate: e.purchaseDate, purchaseCost: e.purchaseCost, condition: e.condition, serialNumber: e.serialNumber, notes: e.notes });
+    setEqModal(true);
+  };
+  const submitEq = (ev: FormEvent) => {
+    ev.preventDefault();
+    if (eqEditing) onUpdateEquipment({ ...eqDraft, id: eqEditing.id });
+    else onAddEquipment(eqDraft);
+    setEqModal(false);
+  };
+
+  const pickConsumable = (name: string) => {
+    setEqDraft((d) => ({ ...d, name, category: 'Consumable' }));
+  };
+
+  return (
+    <div className="content-stack">
+
+      {/* ── Page header ── */}
+      <div className="exp-page-header">
+        <div>
+          <h2 className="exp-page-title">Expenses &amp; Equipment</h2>
+          <p className="exp-page-sub">Track clinic costs and manage inventory — admin only</p>
+        </div>
+        <div className="exp-page-actions">
+          {tab === 'expenses'
+            ? <button className="primary-button" onClick={openAddExp}><Plus size={14} /> Add expense</button>
+            : <button className="primary-button" onClick={openAddEq}><Plus size={14} /> Add equipment</button>
+          }
+        </div>
+      </div>
+
+      {/* ── Tab bar ── */}
+      <div className="exp-tab-bar">
+        <button className={`exp-tab${tab === 'expenses' ? ' active' : ''}`} onClick={() => setTab('expenses')}>
+          <Receipt size={15} /> Clinic Expenses
+        </button>
+        <button className={`exp-tab${tab === 'equipment' ? ' active' : ''}`} onClick={() => setTab('equipment')}>
+          <Sparkles size={15} /> Equipment &amp; Tools
+        </button>
+      </div>
+
+      {/* ══════════════════════ EXPENSES TAB ══════════════════════ */}
+      {tab === 'expenses' && (
+        <>
+          {/* Expense modal */}
+          {expModal && (
+            <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setExpModal(false); }}>
+              <form className="modal-panel exp-modal" onSubmit={submitExp}>
+                <div className="modal-accent modal-accent-violet" />
+                <div className="modal-header">
+                  <div className="modal-header-icon"><Receipt size={18} /></div>
+                  <div>
+                    <h3 className="modal-title">{expEditing ? 'Edit expense' : 'Record expense'}</h3>
+                    <p className="modal-sub">Capture a clinic cost with category &amp; recurrence</p>
+                  </div>
+                  <button type="button" className="icon-btn" onClick={() => setExpModal(false)}><X size={18} /></button>
+                </div>
+
+                <div className="form-two-col">
+                  <label>Clinic <span className="required">*</span>
+                    <select required value={expDraft.clinicId} onChange={(e) => setExpDraft({ ...expDraft, clinicId: e.target.value })}>
+                      {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </label>
+                  <label>Category <span className="required">*</span>
+                    <select required value={expDraft.category} onChange={(e) => setExpDraft({ ...expDraft, category: e.target.value as ExpenseCategory })}>
+                      {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </label>
+                  <label>Amount (₹) <span className="required">*</span>
+                    <input type="number" required min="0" step="0.01" value={expDraft.amount || ''}
+                      onChange={(e) => setExpDraft({ ...expDraft, amount: parseFloat(e.target.value) || 0 })} />
+                  </label>
+                  <label>Date <span className="required">*</span>
+                    <input type="date" required value={expDraft.date}
+                      onChange={(e) => setExpDraft({ ...expDraft, date: e.target.value })} />
+                  </label>
+                  <label style={{ gridColumn: '1 / -1' }}>Recurrence
+                    <div className="exp-recur-toggle">
+                      {EXPENSE_RECURRENCES.map((r) => (
+                        <button key={r} type="button"
+                          className={`exp-recur-btn${expDraft.recurrence === r ? ' active' : ''}`}
+                          onClick={() => setExpDraft({ ...expDraft, recurrence: r })}>
+                          {r === 'one-time' ? '⚡ One-time' : r === 'monthly' ? '📅 Monthly' : '🗓 Annual'}
+                        </button>
+                      ))}
+                    </div>
+                  </label>
+                  <label style={{ gridColumn: '1 / -1' }}>Notes
+                    <textarea rows={2} value={expDraft.notes} onChange={(e) => setExpDraft({ ...expDraft, notes: e.target.value })} placeholder="Optional description…" />
+                  </label>
+                </div>
+
+                <div className="modal-footer">
+                  <button type="button" className="ghost-button" onClick={() => setExpModal(false)}><X size={14} /> Cancel</button>
+                  <button type="submit" className="primary-button"><Check size={14} /> {expEditing ? 'Save changes' : 'Add expense'}</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Summary strip */}
+          <div className="exp-summary-grid">
+            <div className="exp-metric-card exp-card-blue">
+              <span className="exp-metric-icon">📅</span>
+              <div>
+                <span className="exp-metric-label">This month</span>
+                <span className="exp-metric-value">{formatCurrency(totalThisMonth)}</span>
+              </div>
+            </div>
+            <div className="exp-metric-card exp-card-purple">
+              <span className="exp-metric-icon">📊</span>
+              <div>
+                <span className="exp-metric-label">This year</span>
+                <span className="exp-metric-value">{formatCurrency(totalThisYear)}</span>
+              </div>
+            </div>
+            <div className="exp-metric-card exp-card-slate">
+              <span className="exp-metric-icon">🗂</span>
+              <div>
+                <span className="exp-metric-label">Total records</span>
+                <span className="exp-metric-value">{expenses.length}</span>
+              </div>
+            </div>
+            {byCategory.length > 0 && (
+              <div className="exp-metric-card exp-card-breakdown">
+                <span className="exp-metric-label" style={{ marginBottom: 8 }}>By category</span>
+                <div className="exp-cat-bars">
+                  {byCategory.map(({ cat, total }) => (
+                    <div key={cat} className="exp-cat-bar-row">
+                      <span className={`exp-cat-badge cat-${cat.toLowerCase().replace(/\s+/g, '-')}`}>{cat}</span>
+                      <span className="exp-cat-amount">{formatCurrency(total)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Filter bar */}
+          <div className="exp-filter-bar">
+            <div className="exp-filter-left">
+              <div className="search-field">
+                <Search size={15} />
+                <input placeholder="Search notes or category…" value={expSearch} onChange={(e) => setExpSearch(e.target.value)} />
+              </div>
+              <select value={expFilterClinic} onChange={(e) => setExpFilterClinic(e.target.value)}>
+                <option value="all">All clinics</option>
+                {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <select value={expFilterCat} onChange={(e) => setExpFilterCat(e.target.value as ExpenseCategory | 'all')}>
+                <option value="all">All categories</option>
+                {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <span className="exp-result-count">{filteredExp.length} record{filteredExp.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          {/* Table */}
+          <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+            {filteredExp.length === 0 ? (
+              <div className="empty-state"><Receipt size={32} /><p>No expenses yet. Click <strong>Add expense</strong> to get started.</p></div>
+            ) : (
+              <table className="exp-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Clinic</th>
+                    <th>Category</th>
+                    <th>Recurrence</th>
+                    <th>Amount</th>
+                    <th>Notes</th>
+                    <th style={{ width: 72 }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredExp.map((e) => (
+                    <tr key={e.id}>
+                      <td className="exp-td-date">{e.date}</td>
+                      <td className="exp-td-clinic">{clinicName(e.clinicId)}</td>
+                      <td><span className={`exp-cat-badge cat-${e.category.toLowerCase().replace(/\s+/g, '-')}`}>{e.category}</span></td>
+                      <td><span className={`exp-recur-badge recur-${e.recurrence}`}>{e.recurrence}</span></td>
+                      <td className="exp-td-amount">{formatCurrency(e.amount)}</td>
+                      <td className="exp-td-notes">{e.notes || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                      <td>
+                        <div className="exp-row-actions">
+                          <button className="exp-action-btn" title="Edit" onClick={() => openEditExp(e)}><ClipboardList size={13} /></button>
+                          <button className="exp-action-btn exp-action-delete" title="Delete" onClick={() => onDeleteExpense(e.id)}><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ══════════════════════ EQUIPMENT TAB ══════════════════════ */}
+      {tab === 'equipment' && (
+        <>
+          {/* Equipment modal */}
+          {eqModal && (
+            <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setEqModal(false); }}>
+              <form className="modal-panel exp-modal" style={{ maxWidth: 560 }} onSubmit={submitEq}>
+                <div className="modal-accent modal-accent-green" />
+                <div className="modal-header">
+                  <div className="modal-header-icon"><Sparkles size={18} /></div>
+                  <div>
+                    <h3 className="modal-title">{eqEditing ? 'Edit item' : 'Add equipment / consumable'}</h3>
+                    <p className="modal-sub">Record a tool, machine or clinic consumable</p>
+                  </div>
+                  <button type="button" className="icon-btn" onClick={() => setEqModal(false)}><X size={18} /></button>
+                </div>
+
+                {/* Quick-pick consumables */}
+                {!eqEditing && (
+                  <div className="eq-quickpick">
+                    <span className="eq-quickpick-label">Quick pick consumable:</span>
+                    <div className="eq-quickpick-chips">
+                      {CLINIC_CONSUMABLES.map((item) => (
+                        <button key={item.name} type="button"
+                          className={`eq-qchip${eqDraft.name === item.name ? ' selected' : ''}`}
+                          onClick={() => pickConsumable(item.name)}>
+                          {item.emoji} {item.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="form-two-col">
+                  <label style={{ gridColumn: '1 / -1' }}>Item name <span className="required">*</span>
+                    <input required value={eqDraft.name}
+                      onChange={(e) => setEqDraft({ ...eqDraft, name: e.target.value })}
+                      placeholder="Type custom name or pick from above…" />
+                  </label>
+                  <label>Clinic <span className="required">*</span>
+                    <select required value={eqDraft.clinicId} onChange={(e) => setEqDraft({ ...eqDraft, clinicId: e.target.value })}>
+                      {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </label>
+                  <label>Category
+                    <select value={eqDraft.category} onChange={(e) => setEqDraft({ ...eqDraft, category: e.target.value as EquipmentCategory })}>
+                      {EQUIPMENT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </label>
+                  <label>Condition
+                    <select value={eqDraft.condition} onChange={(e) => setEqDraft({ ...eqDraft, condition: e.target.value as EquipmentCondition })}>
+                      {EQUIPMENT_CONDITIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </label>
+                  <label>Serial number
+                    <input value={eqDraft.serialNumber} onChange={(e) => setEqDraft({ ...eqDraft, serialNumber: e.target.value })} placeholder="Optional" />
+                  </label>
+                  <label>Purchase date
+                    <input type="date" value={eqDraft.purchaseDate} onChange={(e) => setEqDraft({ ...eqDraft, purchaseDate: e.target.value })} />
+                  </label>
+                  <label>Purchase cost (₹)
+                    <input type="number" min="0" step="0.01"
+                      value={eqDraft.purchaseCost ?? ''}
+                      onChange={(e) => setEqDraft({ ...eqDraft, purchaseCost: e.target.value ? parseFloat(e.target.value) : null })} />
+                  </label>
+                  <label style={{ gridColumn: '1 / -1' }}>Notes
+                    <textarea rows={2} value={eqDraft.notes} onChange={(e) => setEqDraft({ ...eqDraft, notes: e.target.value })} placeholder="Optional notes…" />
+                  </label>
+                </div>
+
+                <div className="modal-footer">
+                  <button type="button" className="ghost-button" onClick={() => setEqModal(false)}><X size={14} /> Cancel</button>
+                  <button type="submit" className="primary-button"><Check size={14} /> {eqEditing ? 'Save changes' : 'Add item'}</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Summary strip */}
+          <div className="exp-summary-grid">
+            <div className="exp-metric-card exp-card-green">
+              <span className="exp-metric-icon">📦</span>
+              <div>
+                <span className="exp-metric-label">Total items</span>
+                <span className="exp-metric-value">{totalItems}</span>
+              </div>
+            </div>
+            <div className="exp-metric-card exp-card-blue">
+              <span className="exp-metric-icon">💰</span>
+              <div>
+                <span className="exp-metric-label">Total value</span>
+                <span className="exp-metric-value">{formatCurrency(totalValue)}</span>
+              </div>
+            </div>
+            <div className={`exp-metric-card${needsService > 0 ? ' exp-card-red' : ' exp-card-slate'}`}>
+              <span className="exp-metric-icon">🔧</span>
+              <div>
+                <span className="exp-metric-label">Needs service</span>
+                <span className="exp-metric-value">{needsService}</span>
+              </div>
+            </div>
+            <div className="exp-metric-card exp-card-breakdown">
+              <span className="exp-metric-label" style={{ marginBottom: 8 }}>Condition</span>
+              <div className="exp-cat-bars">
+                {EQUIPMENT_CONDITIONS.map((cond) => {
+                  const count = equipment.filter((e) => e.condition === cond).length;
+                  if (!count) return null;
+                  return (
+                    <div key={cond} className="exp-cat-bar-row">
+                      <span className={`eq-cond-badge cond-${cond.toLowerCase().replace(/\s+/g, '-')}`}>{cond}</span>
+                      <span className="exp-cat-amount">{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Filter bar */}
+          <div className="exp-filter-bar">
+            <div className="exp-filter-left">
+              <div className="search-field">
+                <Search size={15} />
+                <input placeholder="Search name or serial…" value={eqSearch} onChange={(e) => setEqSearch(e.target.value)} />
+              </div>
+              <select value={eqFilterClinic} onChange={(e) => setEqFilterClinic(e.target.value)}>
+                <option value="all">All clinics</option>
+                {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <select value={eqFilterCat} onChange={(e) => setEqFilterCat(e.target.value as EquipmentCategory | 'all')}>
+                <option value="all">All categories</option>
+                {EQUIPMENT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select value={eqFilterCond} onChange={(e) => setEqFilterCond(e.target.value as EquipmentCondition | 'all')}>
+                <option value="all">All conditions</option>
+                {EQUIPMENT_CONDITIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <span className="exp-result-count">{filteredEq.length} item{filteredEq.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          {/* Table */}
+          <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+            {filteredEq.length === 0 ? (
+              <div className="empty-state"><Sparkles size={32} /><p>No equipment yet. Click <strong>Add equipment</strong> to start your inventory.</p></div>
+            ) : (
+              <table className="exp-table">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Clinic</th>
+                    <th>Category</th>
+                    <th>Condition</th>
+                    <th>Purchased</th>
+                    <th>Cost</th>
+                    <th>Serial #</th>
+                    <th style={{ width: 72 }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredEq.map((e) => (
+                    <tr key={e.id}>
+                      <td className="eq-td-name">
+                        <span className="eq-item-name">{e.name}</span>
+                        {e.notes && <span className="eq-item-notes">{e.notes}</span>}
+                      </td>
+                      <td className="exp-td-clinic">{clinicName(e.clinicId)}</td>
+                      <td><span className={`exp-cat-badge cat-${e.category.toLowerCase().replace(/\s+/g, '-')}`}>{e.category}</span></td>
+                      <td><span className={`eq-cond-badge cond-${e.condition.toLowerCase().replace(/\s+/g, '-')}`}>{e.condition}</span></td>
+                      <td className="exp-td-date">{e.purchaseDate || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                      <td className="exp-td-amount">{e.purchaseCost !== null ? formatCurrency(e.purchaseCost) : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                      <td className="exp-td-notes">{e.serialNumber || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                      <td>
+                        <div className="exp-row-actions">
+                          <button className="exp-action-btn" title="Edit" onClick={() => openEditEq(e)}><ClipboardList size={13} /></button>
+                          <button className="exp-action-btn exp-action-delete" title="Delete" onClick={() => onDeleteEquipment(e.id)}><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function pageTitle(page: Page) {
   const titles: Record<Page, string> = {
     dashboard: 'Dashboard',
@@ -4676,6 +5983,7 @@ function pageTitle(page: Page) {
     calendar: 'Clinic calendar',
     clinics: 'Clinics',
     staff: 'Staff access',
+    expenses: 'Expenses & Equipment',
   };
   return titles[page];
 }

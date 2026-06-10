@@ -38,3 +38,7 @@ This workspace currently did not expose `npm` in PATH during implementation, so 
 6. Restart the dev server.
 
 The shipped UI is intentionally demo-first; the schema and access policy are ready for wiring the live persistence layer fully in the next implementation pass.
+
+## Connect Cloudflare R2 (patient report uploads)
+
+See [workers/r2-reports/README.md](workers/r2-reports/README.md) for bucket, Worker deploy, and frontend env setup.

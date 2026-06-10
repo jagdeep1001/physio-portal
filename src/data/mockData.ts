@@ -272,4 +272,6 @@ export const initialData: AppData = {
   profiles,
   patients,
   therapySessions,
+  expenses: [],
+  equipment: [],
 };

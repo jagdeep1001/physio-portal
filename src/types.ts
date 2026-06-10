@@ -29,7 +29,9 @@ export interface PatientReport {
   title: string;
   date: string;
   notes: string;
+  /** R2 object key (patients/...) or legacy external URL */
   fileUrl?: string;
+  fileName?: string;
 }
 
 export interface HomeSessionRecord {
@@ -85,6 +87,34 @@ export interface TherapySession {
   amountCollected: number | null;
 }
 
+export type ExpenseCategory = 'Rent' | 'Utilities' | 'Salaries' | 'Supplies' | 'Maintenance' | 'Other';
+export type ExpenseRecurrence = 'one-time' | 'monthly' | 'annual';
+
+export interface ClinicExpense {
+  id: string;
+  clinicId: string;
+  category: ExpenseCategory;
+  amount: number;
+  date: string;
+  recurrence: ExpenseRecurrence;
+  notes: string;
+}
+
+export type EquipmentCondition = 'Good' | 'Fair' | 'Needs service' | 'Retired';
+export type EquipmentCategory = 'Machine' | 'Hand tool' | 'Consumable' | 'Furniture' | 'Other';
+
+export interface Equipment {
+  id: string;
+  clinicId: string;
+  name: string;
+  category: EquipmentCategory;
+  purchaseDate: string;
+  purchaseCost: number | null;
+  condition: EquipmentCondition;
+  serialNumber: string;
+  notes: string;
+}
+
 export interface Credentials {
   email: string;
   password: string;
@@ -104,4 +134,6 @@ export interface AppData {
   profiles: Profile[];
   patients: Patient[];
   therapySessions: TherapySession[];
+  expenses: ClinicExpense[];
+  equipment: Equipment[];
 }
