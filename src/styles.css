@@ -1422,13 +1422,18 @@ label > input,
 label > select,
 label > textarea,
 label > .therapy-multiselect,
-label > .password-field-row,
-label > .staff-title-select-row,
-label > .staff-title-custom-row,
 label > .staff-role-toggle,
 label > .exp-recur-toggle,
 label > .eq-quickpick-chips {
   display: block;
+  margin-top: 5px;
+}
+
+/* Flex rows inside labels — keep input + action button on one line */
+label > .staff-title-select-row,
+label > .staff-title-custom-row,
+label > .password-field-row {
+  display: flex;
   margin-top: 5px;
 }
 
@@ -2564,18 +2569,20 @@ textarea { min-height: 76px; resize: vertical; }
 .staff-title-select-row,
 .staff-title-custom-row {
   display: flex;
-  gap: 6px;
-  align-items: center;
-  margin-top: 4px;
+  gap: 8px;
+  align-items: stretch;
+  margin-top: 0;
 }
-.staff-title-select-row select { flex: 1; }
-.staff-title-custom-row input  { flex: 1; }
+.staff-title-select-row select { flex: 1; min-width: 0; }
+.staff-title-custom-row input  { flex: 1; min-width: 0; }
 .staff-title-select-row .ghost-button,
 .staff-title-custom-row .ghost-button {
   white-space: nowrap;
-  padding: 6px 10px;
-  font-size: 0.75rem;
+  padding: 0 12px;
+  font-size: 0.78rem;
   flex-shrink: 0;
+  min-height: 40px;
+  align-self: stretch;
 }
 
 /* Modal footer */
@@ -2595,9 +2602,21 @@ textarea { min-height: 76px; resize: vertical; }
 .staff-form { position: sticky; top: 20px; }
 
 /* Password field */
-.password-field-row { display: flex; gap: 8px; align-items: stretch; margin-top: 4px; }
-.password-input-wrap { flex: 1; position: relative; }
+.password-field-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin-top: 0;
+}
+.password-input-wrap { flex: 1; min-width: 0; position: relative; }
 .password-input-wrap input { width: 100%; padding-right: 56px; }
+.password-field-row .ghost-button {
+  flex-shrink: 0;
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 0.78rem;
+  align-self: stretch;
+}
 .pw-toggle {
   position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
   background: none; border: none; font-size: 0.72rem; color: var(--teal-dark);
@@ -3063,6 +3082,39 @@ textarea { min-height: 76px; resize: vertical; }
   opacity: 0.5;
 }
 
+/* Stacked sessions in one time slot */
+.day-slot-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-height: 38px;
+}
+.day-slot-booked.compact {
+  min-height: 32px;
+  padding: 4px 6px;
+}
+.day-slot-add-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--teal-dark);
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.day-slot-add-more:hover {
+  background: var(--teal-pale);
+  border-color: var(--teal);
+}
+
 /* small therapy level badge variant */
 .therapy-level-badge.sm { font-size: 0.6rem; padding: 1px 5px; }
 .status.sm { font-size: 0.62rem; padding: 2px 6px; }
@@ -3077,10 +3129,12 @@ textarea { min-height: 76px; resize: vertical; }
 
 /* ── Book-slot modal ─────────────────────────────────────────────────────── */
 /* bk-modal now inherits modal-panel; keep width override */
-.bk-modal { width: min(440px, calc(100vw - 32px)); }
+.bk-modal { width: min(480px, calc(100vw - 32px)); }
 .bk-modal-body { display: flex; flex-direction: column; gap: 14px; }
 .bk-field  { display: flex; flex-direction: column; gap: 5px; }
 .bk-label  { font-size: 0.78rem; font-weight: 700; color: var(--slate); text-transform: uppercase; letter-spacing: 0.04em; }
+.bk-patient-mode { margin-top: 2px; }
+.bk-empty-patients { margin: 4px 0 0; font-size: 0.82rem; color: var(--muted); }
 /* bk-modal-header, bk-modal-title, etc. → replaced by modal-header classes in JSX */
 
 /* ── Multi-patient picker (calendar booking) ──────────────────────────────── */
@@ -3121,6 +3175,18 @@ textarea { min-height: 76px; resize: vertical; }
   cursor: pointer;
 }
 .multi-patient-option span { flex: 1; }
+.multi-patient-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.multi-patient-toolbar .ghost-link {
+  font-size: 0.75rem;
+  padding: 0;
+}
 .patient-clinic-tag { font-size: 0.72rem; font-weight: 500; color: var(--muted); }
 
 /* ── Therapy type multi-select dropdown ───────────────────────────────────── */

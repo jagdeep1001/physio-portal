@@ -4320,6 +4320,8 @@ function CalendarView({
   // Quick-schedule booking state
   const [booking, setBooking]   = useState<{ date: string; time: string; type: SessionType; clinicId: string } | null>(null);
   const [bkPatient, setBkPatient]       = useState('');
+  const [bkPatients, setBkPatients]     = useState<string[]>([]);
+  const [bkMulti, setBkMulti]           = useState(false);
   const [bkTherapy, setBkTherapy]       = useState('');
   const [bkLevel, setBkLevel]           = useState<TherapyLevel>('basic');
   const [bkClinic, setBkClinic]         = useState('');
@@ -4361,9 +4363,24 @@ function CalendarView({
   );
   const sessionsByDate  = (ds: string) => filteredSessions.filter((s) => s.scheduledAt.startsWith(ds));
   const daySessions     = filteredSessions.filter((s) => s.scheduledAt.startsWith(selectedDate));
-  const sessionAt       = (time: string, type: SessionType) =>
-    daySessions.find((s) => s.scheduledAt.slice(11, 16) === time && s.sessionType === type);
+  const sessionsAt      = (time: string, type: SessionType) =>
+    daySessions.filter((s) => s.scheduledAt.slice(11, 16) === time && s.sessionType === type);
   const todayDateStr    = todayStr;
+
+  const bookablePatients = useMemo(() => {
+    if (bkSessionType === 'home') return data.patients.filter((p) => p.clinicId === null);
+    return data.patients.filter((p) => (bkClinic ? p.clinicId === bkClinic : p.clinicId !== null));
+  }, [data.patients, bkSessionType, bkClinic]);
+
+  const pruneBkPatients = (validIds: Set<string>) => {
+    setBkPatients((prev) => prev.filter((id) => validIds.has(id)));
+  };
+
+  const toggleBkPatient = (patientId: string) => {
+    setBkPatients((prev) =>
+      prev.includes(patientId) ? prev.filter((id) => id !== patientId) : [...prev, patientId]
+    );
+  };
 
   // Monthly stats
   const monthStr       = `${year}-${String(month + 1).padStart(2, '0')}`;
@@ -4380,6 +4397,8 @@ function CalendarView({
       : (data.clinics[0]?.id ?? '');
     setBkSessionType('clinic');
     setBkClinic(cId);
+    setBkMulti(false);
+    setBkPatients([]);
     setBkPatient(data.patients.find((p) => p.clinicId === cId)?.id ?? '');
     setBkTherapy('');
     setBkLevel('basic');
@@ -4388,21 +4407,24 @@ function CalendarView({
 
   const submitBooking = (e: FormEvent) => {
     e.preventDefault();
-    if (!booking || !bkPatient || !bkTherapy) return;
-    onAddSession({
-      patientId:       bkPatient,
+    const patientIds = bkMulti ? bkPatients : (bkPatient ? [bkPatient] : []);
+    if (!booking || patientIds.length === 0 || !bkTherapy.trim()) return;
+
+    const base = {
       clinicId:        bkSessionType === 'home' ? null : (bkClinic || booking.clinicId),
       scheduledAt:     `${booking.date}T${booking.time}:00.000Z`,
-      therapyType:     bkTherapy,
+      therapyType:     bkTherapy.trim(),
       sessionType:     bkSessionType,
       therapyLevel:    bkLevel,
       assignedStaffId: currentUser.id,
-      status:          'scheduled',
+      status:          'scheduled' as const,
       completedAt:     null,
       notes:           '',
       treatmentNotes:  '',
       amountCollected: null,
-    });
+    };
+
+    patientIds.forEach((patientId) => onAddSession({ ...base, patientId }));
     setBooking(null);
   };
 
@@ -4507,7 +4529,9 @@ function CalendarView({
                       setBkSessionType('clinic');
                       const cId = selectedClinicId !== 'all' ? selectedClinicId : (data.clinics[0]?.id ?? '');
                       setBkClinic(cId);
-                      setBkPatient(data.patients.find((p) => p.clinicId === cId)?.id ?? '');
+                      const next = data.patients.filter((p) => p.clinicId === cId);
+                      setBkPatient(next[0]?.id ?? '');
+                      pruneBkPatients(new Set(next.map((p) => p.id)));
                     }}
                   ><Stethoscope size={13} /> Clinic</button>
                   <button type="button"
@@ -4515,7 +4539,9 @@ function CalendarView({
                     onClick={() => {
                       setBkSessionType('home');
                       setBkClinic('');
-                      setBkPatient(data.patients.find((p) => p.clinicId === null)?.id ?? '');
+                      const next = data.patients.filter((p) => p.clinicId === null);
+                      setBkPatient(next[0]?.id ?? '');
+                      pruneBkPatients(new Set(next.map((p) => p.id)));
                     }}
                   ><Home size={13} /> Home visit</button>
                 </div>
@@ -4525,8 +4551,11 @@ function CalendarView({
                 <div className="bk-field">
                   <span className="bk-label">Clinic</span>
                   <select value={bkClinic} onChange={(e) => {
-                    setBkClinic(e.target.value);
-                    setBkPatient(data.patients.find((p) => p.clinicId === e.target.value)?.id ?? '');
+                    const cId = e.target.value;
+                    setBkClinic(cId);
+                    const next = data.patients.filter((p) => p.clinicId === cId);
+                    setBkPatient(next[0]?.id ?? '');
+                    pruneBkPatients(new Set(next.map((p) => p.id)));
                   }}>
                     {data.clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
@@ -4534,14 +4563,61 @@ function CalendarView({
               )}
 
               <div className="bk-field">
-                <span className="bk-label">Patient <span className="required">*</span></span>
-                <select required value={bkPatient} onChange={(e) => setBkPatient(e.target.value)}>
-                  <option value="">— select patient —</option>
-                  {(bkSessionType === 'home'
-                    ? data.patients.filter((p) => p.clinicId === null)
-                    : data.patients.filter((p) => bkClinic ? p.clinicId === bkClinic : p.clinicId !== null)
-                  ).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                <span className="bk-label">Patients <span className="required">*</span></span>
+                <div className="toggle-row bk-patient-mode">
+                  <button
+                    type="button"
+                    className={`toggle-btn${!bkMulti ? ' active' : ''}`}
+                    onClick={() => {
+                      setBkMulti(false);
+                      if (!bkPatient && bkPatients.length) setBkPatient(bkPatients[0]);
+                    }}
+                  ><User size={13} /> Single</button>
+                  <button
+                    type="button"
+                    className={`toggle-btn${bkMulti ? ' active' : ''}`}
+                    onClick={() => {
+                      setBkMulti(true);
+                      setBkPatients(bkPatient ? [bkPatient] : []);
+                    }}
+                  ><Users size={13} /> Multiple</button>
+                </div>
+
+                {!bkMulti ? (
+                  <select required={!bkMulti} value={bkPatient} onChange={(e) => setBkPatient(e.target.value)}>
+                    <option value="">— select patient —</option>
+                    {bookablePatients.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                ) : bookablePatients.length === 0 ? (
+                  <p className="bk-empty-patients">No patients available for this session type.</p>
+                ) : (
+                  <>
+                    <div className="multi-patient-toolbar">
+                      <span>{bkPatients.length} selected</span>
+                      <button type="button" className="ghost-link" onClick={() => setBkPatients(bookablePatients.map((p) => p.id))}>
+                        Select all
+                      </button>
+                      <button type="button" className="ghost-link" onClick={() => setBkPatients([])}>
+                        Clear
+                      </button>
+                    </div>
+                    <div className="multi-patient-picker">
+                      {bookablePatients.map((p) => (
+                        <label key={p.id} className="multi-patient-option">
+                          <input
+                            type="checkbox"
+                            checked={bkPatients.includes(p.id)}
+                            onChange={() => toggleBkPatient(p.id)}
+                          />
+                          <span>{p.name}</span>
+                          {p.diagnosis && <span className="patient-clinic-tag">{p.diagnosis.slice(0, 28)}{p.diagnosis.length > 28 ? '…' : ''}</span>}
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="bk-field">
@@ -4564,7 +4640,16 @@ function CalendarView({
 
             <div className="modal-footer">
               <button type="button" className="ghost-button" onClick={() => setBooking(null)}>Cancel</button>
-              <button type="submit" className="primary-button"><CalendarDays size={14} /> Schedule</button>
+              <button
+                type="submit"
+                className="primary-button"
+                disabled={!bkTherapy.trim() || (bkMulti ? bkPatients.length === 0 : !bkPatient)}
+              >
+                <CalendarDays size={14} />
+                {bkMulti && bkPatients.length > 1
+                  ? `Schedule ${bkPatients.length} sessions`
+                  : 'Schedule'}
+              </button>
             </div>
           </form>
         </div>
@@ -4702,7 +4787,7 @@ function CalendarView({
           {/* Time slot rows */}
           <div className="day-view-grid">
             {ALL_DAY_SLOTS.map((time) => {
-              const clinicSession = sessionAt(time, 'clinic');
+              const clinicSessions = sessionsAt(time, 'clinic');
               const isHour        = time.endsWith(':00');
               return (
                 <div key={time} className={`day-slot-row clinic-only${isHour ? ' hour-boundary' : ''}`}>
@@ -4715,25 +4800,32 @@ function CalendarView({
 
                   {/* Clinic column */}
                   <div className="day-slot">
-                    {clinicSession ? (
-                      <button
-                        className={`day-slot-booked clinic level-${clinicSession.therapyLevel ?? 'basic'} status-${clinicSession.status}`}
-                        onClick={() => setPopover(clinicSession)}
-                      >
-                        <div className="slot-booked-top">
-                          <span className="slot-patient">{data.patients.find((p) => p.id === clinicSession.patientId)?.name ?? '—'}</span>
-                          <span className={`therapy-level-badge sm ${clinicSession.therapyLevel ?? 'basic'}`}>{clinicSession.therapyLevel ?? 'basic'}</span>
-                        </div>
-                        <div className="slot-booked-bottom">
-                          <span className="slot-therapy">{clinicSession.therapyType}</span>
-                          <span className={`status sm ${clinicSession.status}`}>{statusLabel(clinicSession.status)}</span>
-                        </div>
-                        <span className="slot-lock-icon"><Lock size={10} /></span>
-                      </button>
-                    ) : (
+                    {clinicSessions.length === 0 ? (
                       <button className="day-slot-empty" onClick={() => handleBookSlot(time)}>
                         <Plus size={12} /><span>Add</span>
                       </button>
+                    ) : (
+                      <div className="day-slot-stack">
+                        {clinicSessions.map((clinicSession) => (
+                          <button
+                            key={clinicSession.id}
+                            className={`day-slot-booked clinic compact level-${clinicSession.therapyLevel ?? 'basic'} status-${clinicSession.status}`}
+                            onClick={() => setPopover(clinicSession)}
+                          >
+                            <div className="slot-booked-top">
+                              <span className="slot-patient">{data.patients.find((p) => p.id === clinicSession.patientId)?.name ?? '—'}</span>
+                              <span className={`therapy-level-badge sm ${clinicSession.therapyLevel ?? 'basic'}`}>{clinicSession.therapyLevel ?? 'basic'}</span>
+                            </div>
+                            <div className="slot-booked-bottom">
+                              <span className="slot-therapy">{clinicSession.therapyType}</span>
+                              <span className={`status sm ${clinicSession.status}`}>{statusLabel(clinicSession.status)}</span>
+                            </div>
+                          </button>
+                        ))}
+                        <button type="button" className="day-slot-add-more" onClick={() => handleBookSlot(time)}>
+                          <Plus size={10} /> Add patient
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
