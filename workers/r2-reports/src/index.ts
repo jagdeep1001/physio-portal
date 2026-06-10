@@ -15,11 +15,22 @@ const ALLOWED_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ]);
 
+function normalizeOrigin(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === '*') return '*';
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return trimmed.replace(/\/$/, '');
+  }
+}
+
 function corsHeaders(origin: string | null, env: Env): HeadersInit {
-  const allowed = env.ALLOWED_ORIGINS.split(',').map((value) => value.trim());
+  const allowed = env.ALLOWED_ORIGINS.split(',').map(normalizeOrigin).filter(Boolean);
+  const normalizedOrigin = origin ? normalizeOrigin(origin) : null;
   const allowOrigin =
-    allowed.includes('*') || (origin && allowed.includes(origin))
-      ? origin ?? allowed[0] ?? '*'
+    allowed.includes('*') || (normalizedOrigin && allowed.includes(normalizedOrigin))
+      ? normalizedOrigin ?? allowed[0] ?? '*'
       : allowed[0] ?? '*';
 
   return {

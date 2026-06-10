@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import type { AppData, Clinic, HomeVisitDetails, Patient, PatientReport, Profile, TherapySession } from '../types';
+import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, Profile, TherapySession } from '../types';
 
 const supabaseUrl      = import.meta.env.VITE_SUPABASE_URL      as string | undefined;
 const supabaseAnonKey  = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -67,6 +67,28 @@ type TherapySessionRow = {
   notes: string | null;
   treatment_notes: string | null;
   amount_collected: number | null;
+};
+
+type ClinicExpenseRow = {
+  id: string;
+  clinic_id: string;
+  category: string;
+  amount: number;
+  date: string;
+  recurrence: string;
+  notes: string;
+};
+
+type EquipmentRow = {
+  id: string;
+  clinic_id: string;
+  name: string;
+  category: string;
+  purchase_date: string | null;
+  purchase_cost: number | null;
+  condition: string;
+  serial_number: string;
+  notes: string;
 };
 
 // ── Mappers ────────────────────────────────────────────────
@@ -137,6 +159,32 @@ export function mapTherapySession(row: TherapySessionRow): TherapySession {
   };
 }
 
+export function mapClinicExpense(row: ClinicExpenseRow): ClinicExpense {
+  return {
+    id: row.id,
+    clinicId: row.clinic_id,
+    category: row.category as ClinicExpense['category'],
+    amount: Number(row.amount),
+    date: row.date,
+    recurrence: row.recurrence as ClinicExpense['recurrence'],
+    notes: row.notes ?? '',
+  };
+}
+
+export function mapEquipment(row: EquipmentRow): Equipment {
+  return {
+    id: row.id,
+    clinicId: row.clinic_id,
+    name: row.name,
+    category: row.category as Equipment['category'],
+    purchaseDate: row.purchase_date ?? '',
+    purchaseCost: row.purchase_cost != null ? Number(row.purchase_cost) : null,
+    condition: row.condition as Equipment['condition'],
+    serialNumber: row.serial_number ?? '',
+    notes: row.notes ?? '',
+  };
+}
+
 // ── Auth: login against profiles table (no Supabase Auth) ──
 export async function loginWithProfiles(email: string, password: string): Promise<Profile | null> {
   if (!supabase) return null;
@@ -155,14 +203,17 @@ export async function loginWithProfiles(email: string, password: string): Promis
 export async function loadRemoteData(): Promise<AppData> {
   if (!supabase) throw new Error('Supabase is not configured.');
 
-  const [clinics, profiles, patients, therapySessions] = await Promise.all([
+  const [clinics, profiles, patients, therapySessions, expenses, equipment] = await Promise.all([
     supabase.from('clinics').select('*').order('name'),
     supabase.from('profiles').select('*').order('name'),
     supabase.from('patients').select('*').order('name'),
     supabase.from('therapy_sessions').select('*').order('scheduled_at'),
+    supabase.from('clinic_expenses').select('*').order('date', { ascending: false }),
+    supabase.from('equipment').select('*').order('name'),
   ]);
 
-  const error = clinics.error ?? profiles.error ?? patients.error ?? therapySessions.error;
+  const error = clinics.error ?? profiles.error ?? patients.error ?? therapySessions.error
+    ?? expenses.error ?? equipment.error;
   if (error) throw error;
 
   return {
@@ -170,8 +221,8 @@ export async function loadRemoteData(): Promise<AppData> {
     profiles:        (profiles.data        ?? []).map((row) => mapProfile(row as ProfileRow)),
     patients:        (patients.data        ?? []).map((row) => mapPatient(row as PatientRow)),
     therapySessions: (therapySessions.data ?? []).map((row) => mapTherapySession(row as TherapySessionRow)),
-    expenses:  [],
-    equipment: [],
+    expenses:        (expenses.data        ?? []).map((row) => mapClinicExpense(row as ClinicExpenseRow)),
+    equipment:       (equipment.data       ?? []).map((row) => mapEquipment(row as EquipmentRow)),
   };
 }
 
@@ -229,3 +280,95 @@ export const toTherapySessionRow = (session: Omit<TherapySession, 'id'>) => ({
   treatment_notes:   session.treatmentNotes,
   amount_collected:  session.amountCollected,
 });
+
+export const toClinicExpenseRow = (expense: Omit<ClinicExpense, 'id'>) => ({
+  clinic_id:  expense.clinicId,
+  category:   expense.category,
+  amount:     Number(expense.amount),
+  date:       expense.date,
+  recurrence: expense.recurrence,
+  notes:      expense.notes ?? '',
+});
+
+export const toEquipmentRow = (item: Omit<Equipment, 'id'>) => ({
+  clinic_id:      item.clinicId,
+  name:           item.name,
+  category:       item.category,
+  purchase_date:  item.purchaseDate || null,
+  purchase_cost:  item.purchaseCost,
+  condition:      item.condition,
+  serial_number:  item.serialNumber ?? '',
+  notes:          item.notes ?? '',
+});
+
+// ── Expense & equipment mutations (verify rows affected) ─────────────────────
+
+export async function insertClinicExpense(expense: Omit<ClinicExpense, 'id'>, id: string) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase
+    .from('clinic_expenses')
+    .insert({ ...toClinicExpenseRow(expense), id })
+    .select('id')
+    .single();
+  if (error) throw error;
+  if (!data) throw new Error('Expense could not be saved.');
+  return data.id as string;
+}
+
+export async function updateClinicExpenseRecord(expense: ClinicExpense) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { id, ...rest } = expense;
+  const { data, error } = await supabase
+    .from('clinic_expenses')
+    .update(toClinicExpenseRow(rest))
+    .eq('id', id)
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('Expense not found or could not be updated.');
+}
+
+export async function deleteClinicExpenseRecord(id: string) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error, count } = await supabase
+    .from('clinic_expenses')
+    .delete({ count: 'exact' })
+    .eq('id', id);
+  if (error) throw error;
+  if (!count) throw new Error('Expense not found or could not be deleted.');
+}
+
+export async function insertEquipmentRecord(item: Omit<Equipment, 'id'>, id: string) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase
+    .from('equipment')
+    .insert({ ...toEquipmentRow(item), id })
+    .select('id')
+    .single();
+  if (error) throw error;
+  if (!data) throw new Error('Equipment could not be saved.');
+  return data.id as string;
+}
+
+export async function updateEquipmentRecord(item: Equipment) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { id, ...rest } = item;
+  const { data, error } = await supabase
+    .from('equipment')
+    .update(toEquipmentRow(rest))
+    .eq('id', id)
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('Equipment not found or could not be updated.');
+}
+
+export async function deleteEquipmentRecord(id: string) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error, count } = await supabase
+    .from('equipment')
+    .delete({ count: 'exact' })
+    .eq('id', id);
+  if (error) throw error;
+  if (!count) throw new Error('Equipment not found or could not be deleted.');
+}

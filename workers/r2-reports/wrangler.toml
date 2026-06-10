@@ -7,5 +7,7 @@ binding = "REPORTS_BUCKET"
 bucket_name = "physio-reports"
 
 [vars]
-# Set allowed frontend origins (comma-separated). Use "*" only for local dev.
-ALLOWED_ORIGINS = "http://localhost:5173,https://jagdeep1001.github.io/physio-portal/"
+# Comma-separated site origins (scheme + host only for GitHub Pages project sites).
+# Browser Origin is e.g. https://your-user.github.io — not the repo path.
+# You can also paste full Pages URLs; paths are stripped automatically.
+ALLOWED_ORIGINS = "http://localhost:5173,https://jagdeep1001.github.io"

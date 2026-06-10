@@ -30,6 +30,23 @@ VITE_R2_API_TOKEN=<same token as worker secret>
 
 5. Restart the Vite dev server.
 
+## GitHub Pages production
+
+Vite reads `VITE_*` variables **at build time only**. Local `.env.local` is not used by CI.
+
+1. In GitHub → **Settings → Secrets and variables → Actions**, add:
+   - `VITE_R2_API_URL` — your deployed worker URL (e.g. `https://physio-r2-reports.<account>.workers.dev`)
+   - `VITE_R2_API_TOKEN` — must match the worker secret from `wrangler secret put R2_API_TOKEN`
+
+2. Ensure `.github/workflows/deploy.yml` passes those secrets into the `npm run build` step (already wired in this repo).
+
+3. Redeploy: push to `main` or run the **Deploy to GitHub Pages** workflow manually.
+
+4. Update worker `ALLOWED_ORIGINS` to your Pages **origin** (host only):
+   - Project site `https://user.github.io/repo/` → use `https://user.github.io`
+   - Custom domain → use `https://your-domain.com`
+   - Then redeploy the worker: `cd workers/r2-reports && npm run deploy`
+
 ## Local development
 
 Run the worker locally in one terminal:

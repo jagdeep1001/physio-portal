@@ -37,6 +37,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { demoPasswords, initialData } from './data/mockData';
 import {
+  deleteClinicExpenseRecord,
+  deleteEquipmentRecord,
+  insertClinicExpense,
+  insertEquipmentRecord,
   isSupabaseConfigured,
   loadRemoteData,
   loginWithProfiles,
@@ -44,6 +48,8 @@ import {
   toPatientRow,
   toProfileRow,
   toTherapySessionRow,
+  updateClinicExpenseRecord,
+  updateEquipmentRecord,
 } from './lib/supabase';
 import {
   ACCEPTED_REPORT_TYPES,
@@ -708,26 +714,68 @@ export function App() {
   };
 
   // ── Expenses CRUD ──
-  const addExpense = (expense: Omit<ClinicExpense, 'id'>) => {
+  const addExpense = async (expense: Omit<ClinicExpense, 'id'>) => {
+    if (supabase) {
+      try {
+        await insertClinicExpense(expense, createDbId());
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); throw error; }
+      return;
+    }
     persist((d) => ({ ...d, expenses: [...(d.expenses ?? []), { ...expense, id: createId('exp') }] }));
   };
-  const updateExpense = (expense: ClinicExpense) => {
+  const updateExpense = async (expense: ClinicExpense) => {
+    if (supabase) {
+      try {
+        await updateClinicExpenseRecord(expense);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); throw error; }
+      return;
+    }
     persist((d) => ({ ...d, expenses: (d.expenses ?? []).map((e) => (e.id === expense.id ? expense : e)) }));
   };
-  const deleteExpense = (id: string) => {
+  const deleteExpense = async (id: string) => {
     if (!window.confirm('Delete this expense record?')) return;
+    if (supabase) {
+      try {
+        await deleteClinicExpenseRecord(id);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); throw error; }
+      return;
+    }
     persist((d) => ({ ...d, expenses: (d.expenses ?? []).filter((e) => e.id !== id) }));
   };
 
   // ── Equipment CRUD ──
-  const addEquipment = (item: Omit<Equipment, 'id'>) => {
+  const addEquipment = async (item: Omit<Equipment, 'id'>) => {
+    if (supabase) {
+      try {
+        await insertEquipmentRecord(item, createDbId());
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); throw error; }
+      return;
+    }
     persist((d) => ({ ...d, equipment: [...(d.equipment ?? []), { ...item, id: createId('equip') }] }));
   };
-  const updateEquipment = (item: Equipment) => {
+  const updateEquipment = async (item: Equipment) => {
+    if (supabase) {
+      try {
+        await updateEquipmentRecord(item);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); throw error; }
+      return;
+    }
     persist((d) => ({ ...d, equipment: (d.equipment ?? []).map((e) => (e.id === item.id ? item : e)) }));
   };
-  const deleteEquipment = (id: string) => {
+  const deleteEquipment = async (id: string) => {
     if (!window.confirm('Delete this equipment record?')) return;
+    if (supabase) {
+      try {
+        await deleteEquipmentRecord(id);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); throw error; }
+      return;
+    }
     persist((d) => ({ ...d, equipment: (d.equipment ?? []).filter((e) => e.id !== id) }));
   };
 
@@ -5591,12 +5639,12 @@ function ExpensesView({
   clinics: Clinic[];
   expenses: ClinicExpense[];
   equipment: Equipment[];
-  onAddExpense: (e: Omit<ClinicExpense, 'id'>) => void;
-  onUpdateExpense: (e: ClinicExpense) => void;
-  onDeleteExpense: (id: string) => void;
-  onAddEquipment: (e: Omit<Equipment, 'id'>) => void;
-  onUpdateEquipment: (e: Equipment) => void;
-  onDeleteEquipment: (id: string) => void;
+  onAddExpense: (e: Omit<ClinicExpense, 'id'>) => void | Promise<void>;
+  onUpdateExpense: (e: ClinicExpense) => void | Promise<void>;
+  onDeleteExpense: (id: string) => void | Promise<void>;
+  onAddEquipment: (e: Omit<Equipment, 'id'>) => void | Promise<void>;
+  onUpdateEquipment: (e: Equipment) => void | Promise<void>;
+  onDeleteEquipment: (id: string) => void | Promise<void>;
 }) {
   const [tab, setTab] = useState<'expenses' | 'equipment'>('expenses');
 
@@ -5616,6 +5664,8 @@ function ExpensesView({
   const [eqFilterCat, setEqFilterCat]       = useState<EquipmentCategory | 'all'>('all');
   const [eqFilterCond, setEqFilterCond]     = useState<EquipmentCondition | 'all'>('all');
   const [eqSearch, setEqSearch]   = useState('');
+  const [expSaving, setExpSaving]   = useState(false);
+  const [eqSaving, setEqSaving]     = useState(false);
 
   // ── Helpers ──
   const clinicName = (id: string) => clinics.find((c) => c.id === id)?.name ?? '—';
@@ -5662,11 +5712,18 @@ function ExpensesView({
     setExpDraft({ clinicId: e.clinicId, category: e.category, amount: e.amount, date: e.date, recurrence: e.recurrence, notes: e.notes });
     setExpModal(true);
   };
-  const submitExp = (ev: FormEvent) => {
+  const submitExp = async (ev: FormEvent) => {
     ev.preventDefault();
-    if (expEditing) onUpdateExpense({ ...expDraft, id: expEditing.id });
-    else onAddExpense(expDraft);
-    setExpModal(false);
+    setExpSaving(true);
+    try {
+      if (expEditing) await onUpdateExpense({ ...expDraft, id: expEditing.id });
+      else await onAddExpense(expDraft);
+      setExpModal(false);
+    } catch {
+      // Error surfaced via systemNotice in parent handler
+    } finally {
+      setExpSaving(false);
+    }
   };
 
   // ── Equipment handlers ──
@@ -5676,11 +5733,18 @@ function ExpensesView({
     setEqDraft({ clinicId: e.clinicId, name: e.name, category: e.category, purchaseDate: e.purchaseDate, purchaseCost: e.purchaseCost, condition: e.condition, serialNumber: e.serialNumber, notes: e.notes });
     setEqModal(true);
   };
-  const submitEq = (ev: FormEvent) => {
+  const submitEq = async (ev: FormEvent) => {
     ev.preventDefault();
-    if (eqEditing) onUpdateEquipment({ ...eqDraft, id: eqEditing.id });
-    else onAddEquipment(eqDraft);
-    setEqModal(false);
+    setEqSaving(true);
+    try {
+      if (eqEditing) await onUpdateEquipment({ ...eqDraft, id: eqEditing.id });
+      else await onAddEquipment(eqDraft);
+      setEqModal(false);
+    } catch {
+      // Error surfaced via systemNotice in parent handler
+    } finally {
+      setEqSaving(false);
+    }
   };
 
   const pickConsumable = (name: string) => {
@@ -5768,7 +5832,10 @@ function ExpensesView({
 
                 <div className="modal-footer">
                   <button type="button" className="ghost-button" onClick={() => setExpModal(false)}><X size={14} /> Cancel</button>
-                  <button type="submit" className="primary-button"><Check size={14} /> {expEditing ? 'Save changes' : 'Add expense'}</button>
+                  <button type="submit" className="primary-button" disabled={expSaving}>
+                    {expSaving ? <Loader2 size={14} className="icon-spin" /> : <Check size={14} />}
+                    {expSaving ? 'Saving…' : expEditing ? 'Save changes' : 'Add expense'}
+                  </button>
                 </div>
               </form>
             </div>
@@ -5944,7 +6011,10 @@ function ExpensesView({
 
                 <div className="modal-footer">
                   <button type="button" className="ghost-button" onClick={() => setEqModal(false)}><X size={14} /> Cancel</button>
-                  <button type="submit" className="primary-button"><Check size={14} /> {eqEditing ? 'Save changes' : 'Add item'}</button>
+                  <button type="submit" className="primary-button" disabled={eqSaving}>
+                    {eqSaving ? <Loader2 size={14} className="icon-spin" /> : <Check size={14} />}
+                    {eqSaving ? 'Saving…' : eqEditing ? 'Save changes' : 'Add item'}
+                  </button>
                 </div>
               </form>
             </div>

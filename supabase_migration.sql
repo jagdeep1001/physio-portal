@@ -168,3 +168,27 @@ create table if not exists equipment (
   notes          text not null default '',
   created_at     timestamptz not null default now()
 );
+
+-- ── RLS for expenses & equipment ───────────────────────────────────────────
+alter table clinic_expenses enable row level security;
+alter table equipment       enable row level security;
+
+do $$ declare r record;
+begin
+  for r in select policyname, tablename from pg_policies
+           where tablename in ('clinic_expenses', 'equipment')
+  loop
+    execute format('drop policy if exists %I on %I', r.policyname, r.tablename);
+  end loop;
+end $$;
+
+create policy "allow_all_clinic_expenses" on clinic_expenses for all using (true) with check (true);
+create policy "allow_all_equipment"       on equipment       for all using (true) with check (true);
+
+create index if not exists idx_clinic_expenses_clinic on clinic_expenses(clinic_id);
+create index if not exists idx_clinic_expenses_date   on clinic_expenses(date);
+create index if not exists idx_equipment_clinic       on equipment(clinic_id);
+
+-- Ensure API roles can read/write (required for edit/delete via anon key)
+grant all on clinic_expenses to anon, authenticated, service_role;
+grant all on equipment       to anon, authenticated, service_role;
