@@ -2712,7 +2712,53 @@ textarea { min-height: 76px; resize: vertical; }
   padding: 2px 5px;
   margin-left: 5px;
   font-size: 0.7rem;
+  flex-shrink: 0;
 }
+.home-only-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--amber-dark);
+  background: var(--amber-light);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.patient-name-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.patient-avatar-home {
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  color: var(--amber-dark);
+}
+
+/* Edit patient — type toggle in modal */
+.pf-type-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.pf-type-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--slate);
+}
+.pe-type-card.compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+.pe-type-card.compact strong { font-size: 0.82rem; }
+.pe-type-card.compact svg { margin-bottom: 0; }
 
 /* ── Complications / Surgeries row ── */
 /* Signs & Symptoms blocks on patient detail */

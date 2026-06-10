@@ -1599,7 +1599,11 @@ function PatientsView({
   const [clinicFilter, setClinicFilter] = useState('all');
 
   const filtered = data.patients
-    .filter((p) => clinicFilter === 'all' || p.clinicId === clinicFilter)
+    .filter((p) => {
+      if (clinicFilter === 'all') return true;
+      if (clinicFilter === 'home') return isHomeOnlyPatient(p);
+      return p.clinicId === clinicFilter;
+    })
     .filter((p) => [p.name, p.phone, p.diagnosis].join(' ').toLowerCase().includes(query.toLowerCase()));
 
   return (
@@ -1617,6 +1621,7 @@ function PatientsView({
             onChange={(e) => setClinicFilter(e.target.value)}
           >
             <option value="all">All clinics</option>
+            <option value="home">Home only patients</option>
             {allClinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <button className="primary-button" type="button" onClick={onGoToAddPatient}>
@@ -1631,17 +1636,27 @@ function PatientsView({
           filtered.map((patient) => {
             const sessions = data.therapySessions.filter((s) => s.patientId === patient.id);
             const lastSession = sessions.sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
-            const hasHomeVisit = sessions.some((s) => s.sessionType === 'home');
+            const homeOnly = isHomeOnlyPatient(patient);
+            const hasHomeSessions = sessions.some((s) => s.sessionType === 'home');
             return (
               <button key={patient.id} className="table-row patient-row" onClick={() => onOpenPatient(patient.id)}>
-                <span className="patient-avatar">{patient.name.charAt(0)}</span>
+                <span className={`patient-avatar${homeOnly ? ' patient-avatar-home' : ''}`}>{patient.name.charAt(0)}</span>
                 <span>
-                  <strong>{patient.name}</strong>
+                  <strong className="patient-name-row">
+                    {patient.name}
+                    {homeOnly && <span className="home-badge-sm" title="Home only patient"><Home size={10} /></span>}
+                  </strong>
                   <small>{patient.diagnosis}</small>
                 </span>
                 <span>
-                  {clinicName(allClinics, patient.clinicId)}
-                  {hasHomeVisit && <span className="home-badge-sm"><Home size={10} /></span>}
+                  {homeOnly ? (
+                    <span className="home-only-label"><Home size={11} /> Home only</span>
+                  ) : (
+                    <>
+                      {clinicName(allClinics, patient.clinicId)}
+                      {hasHomeSessions && <span className="home-badge-sm" title="Has home visits"><Home size={10} /></span>}
+                    </>
+                  )}
                 </span>
                 <span>{patient.phone}</span>
                 <span>
@@ -1840,7 +1855,7 @@ function PatientDetailView({
           <div className="pp-hero-main">
             <div className="pp-avatar">{patient.name.charAt(0).toUpperCase()}</div>
             <div className="pp-identity">
-              <p className="pp-eyebrow">{patient.clinicId ? clinicName(allClinics, patient.clinicId) : 'Home visit patient'}</p>
+              <p className="pp-eyebrow">{patient.clinicId ? clinicName(allClinics, patient.clinicId) : 'Home only patient'}</p>
               <h1 className="pp-name">{patient.name}</h1>
               {patient.diagnosis && <p className="pp-diagnosis">{patient.diagnosis}</p>}
               <div className="pp-badges">
@@ -2417,7 +2432,7 @@ function PatientForm({
       Boolean(draft.phone.trim()),
       Boolean(draft.dateOfBirth),
       Boolean(draft.diagnosis.trim()),
-      draft.homeVisitDetails ? true : Boolean(draft.clinicId),
+      isHomeOnlyPatient(draft) ? true : Boolean(draft.clinicId),
     ];
     return Math.round((checks.filter(Boolean).length / checks.length) * 100);
   }, [draft]);
@@ -2575,7 +2590,7 @@ function PatientForm({
                   </p>
                   <div className="pe-hero-badges">
                     {draft.homeVisitDetails ? (
-                      <span className="pe-hero-badge home"><Home size={12} /> Home visit</span>
+                      <span className="pe-hero-badge home"><Home size={12} /> Home only</span>
                     ) : (
                       <span className="pe-hero-badge clinic"><Building2 size={12} /> Clinic patient</span>
                     )}
@@ -2601,7 +2616,7 @@ function PatientForm({
             entry
             step={1}
             title="Patient type"
-            subtitle="Choose where this patient receives care"
+            subtitle="Clinic patients visit a location; home only patients are treated at home"
             icon={MapPin}
           >
             <div className="pe-type-cards">
@@ -2620,8 +2635,8 @@ function PatientForm({
                 onClick={setHomePatient}
               >
                 <Home size={22} />
-                <strong>Home visit</strong>
-                <span>Physiotherapy at the patient&apos;s home</span>
+                <strong>Home only</strong>
+                <span>No clinic — physiotherapy at home</span>
               </button>
             </div>
             {!draft.homeVisitDetails && (
@@ -2651,6 +2666,29 @@ function PatientForm({
       )}
 
       <div className={!isEntry && editing ? 'modal-body' : undefined}>
+      {editing && !isEntry && (
+        <div className="pf-type-row">
+          <span className="pf-type-label">Patient type</span>
+          <div className="pe-type-cards">
+            <button
+              type="button"
+              className={`pe-type-card compact${!draft.homeVisitDetails ? ' active' : ''}`}
+              onClick={setClinicPatient}
+            >
+              <Building2 size={18} />
+              <strong>Clinic</strong>
+            </button>
+            <button
+              type="button"
+              className={`pe-type-card compact${draft.homeVisitDetails ? ' active' : ''}`}
+              onClick={setHomePatient}
+            >
+              <Home size={18} />
+              <strong>Home only</strong>
+            </button>
+          </div>
+        </div>
+      )}
       <PatientFormSection
         entry={isEntry}
         step={2}
@@ -2670,7 +2708,7 @@ function PatientForm({
             ) : (
               <div className="home-no-clinic-note">
                 <Home size={15} />
-                Home-visit patient — no clinic assignment required
+                Home only patient — no clinic assignment required
               </div>
             )}
             <label>
@@ -5464,8 +5502,12 @@ function SessionRow({
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function clinicName(clinics: Clinic[], clinicId: string | null | undefined) {
-  if (!clinicId) return 'Home visit';
+  if (!clinicId) return 'Home only';
   return clinics.find((c) => c.id === clinicId)?.name ?? 'Unknown clinic';
+}
+
+function isHomeOnlyPatient(p: { clinicId: string | null; homeVisitDetails?: HomeVisitDetails }) {
+  return p.clinicId === null || Boolean(p.homeVisitDetails);
 }
 
 // ─── Therapy type multi-select ────────────────────────────────────────────────
