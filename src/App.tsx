@@ -3580,7 +3580,7 @@ function CalendarView({
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
 }) {
   const now = new Date();
-  const [view, setView]         = useState<'month' | 'day'>('month');
+  const [view, setView]         = useState<'month' | 'day'>('day');
   const [year, setYear]         = useState(now.getFullYear());
   const [month, setMonth]       = useState(now.getMonth()); // 0-indexed
   const [selectedDate, setSelectedDate] = useState(todayStr);
@@ -3591,10 +3591,11 @@ function CalendarView({
 
   // Quick-schedule booking state
   const [booking, setBooking]   = useState<{ date: string; time: string; type: SessionType; clinicId: string } | null>(null);
-  const [bkPatient, setBkPatient]   = useState('');
-  const [bkTherapy, setBkTherapy]   = useState('');
-  const [bkLevel, setBkLevel]       = useState<TherapyLevel>('basic');
-  const [bkClinic, setBkClinic]     = useState('');
+  const [bkPatient, setBkPatient]       = useState('');
+  const [bkTherapy, setBkTherapy]       = useState('');
+  const [bkLevel, setBkLevel]           = useState<TherapyLevel>('basic');
+  const [bkClinic, setBkClinic]         = useState('');
+  const [bkSessionType, setBkSessionType] = useState<SessionType>('clinic');
 
   const clinicsForSelector = currentUser.role === 'admin' ? allClinics : data.clinics;
 
@@ -3649,10 +3650,11 @@ function CalendarView({
     const cId = selectedClinicId !== 'all'
       ? selectedClinicId
       : (data.clinics[0]?.id ?? '');
-    setBkPatient(data.patients.find((p) => p.clinicId !== null)?.id ?? '');
+    setBkSessionType('clinic');
+    setBkClinic(cId);
+    setBkPatient(data.patients.find((p) => p.clinicId === cId)?.id ?? '');
     setBkTherapy('');
     setBkLevel('basic');
-    setBkClinic(cId);
     setBooking({ date: selectedDate, time, type: 'clinic', clinicId: cId });
   };
 
@@ -3661,10 +3663,10 @@ function CalendarView({
     if (!booking || !bkPatient || !bkTherapy) return;
     onAddSession({
       patientId:       bkPatient,
-      clinicId:        bkClinic || booking.clinicId,
+      clinicId:        bkSessionType === 'home' ? null : (bkClinic || booking.clinicId),
       scheduledAt:     `${booking.date}T${booking.time}:00.000Z`,
       therapyType:     bkTherapy,
-      sessionType:     booking.type,
+      sessionType:     bkSessionType,
       therapyLevel:    bkLevel,
       assignedStaffId: currentUser.id,
       status:          'scheduled',
@@ -3751,46 +3753,97 @@ function CalendarView({
       {/* ── Quick-schedule modal ── */}
       {booking && (
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setBooking(null); }}>
-          <form className="modal-panel" style={{ maxWidth: 420 }} onSubmit={submitBooking}>
-            <div className="modal-header">
-              <div>
-                <h3 className="modal-title">Book slot</h3>
-                <p className="modal-sub">
-                  Clinic · {booking.date} at {booking.time}
+          <form className="bk-modal" onSubmit={submitBooking}>
+
+            {/* Coloured header strip */}
+            <div className="bk-modal-header">
+              <div className="bk-modal-icon">
+                {bkSessionType === 'home' ? <Home size={18} /> : <Stethoscope size={18} />}
+              </div>
+              <div className="bk-modal-title-block">
+                <h3 className="bk-modal-title">Book slot</h3>
+                <p className="bk-modal-sub">
+                  {new Intl.DateTimeFormat('en', { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(booking.date + 'T12:00'))}
+                  {' · '}{booking.time}
                 </p>
               </div>
-              <button type="button" className="icon-btn" onClick={() => setBooking(null)}><X size={18} /></button>
+              <button type="button" className="bk-close-btn" onClick={() => setBooking(null)}><X size={16} /></button>
             </div>
 
-            <label>Patient <span className="required">*</span>
-              <select required value={bkPatient} onChange={(e) => setBkPatient(e.target.value)}>
-                <option value="">— select patient —</option>
-                {data.patients.filter((p) => p.clinicId !== null).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </label>
+            <div className="bk-modal-body">
+              {/* Session type */}
+              <div className="bk-field">
+                <span className="bk-label">Session type</span>
+                <div className="toggle-row">
+                  <button type="button"
+                    className={`toggle-btn${bkSessionType === 'clinic' ? ' active' : ''}`}
+                    onClick={() => {
+                      setBkSessionType('clinic');
+                      const cId = selectedClinicId !== 'all' ? selectedClinicId : (data.clinics[0]?.id ?? '');
+                      setBkClinic(cId);
+                      setBkPatient(data.patients.find((p) => p.clinicId === cId)?.id ?? '');
+                    }}
+                  ><Stethoscope size={13} /> Clinic</button>
+                  <button type="button"
+                    className={`toggle-btn${bkSessionType === 'home' ? ' active' : ''}`}
+                    onClick={() => {
+                      setBkSessionType('home');
+                      setBkClinic('');
+                      setBkPatient(data.patients.find((p) => p.clinicId === null)?.id ?? '');
+                    }}
+                  ><Home size={13} /> Home visit</button>
+                </div>
+              </div>
 
-            <label>Therapy type <span className="required">*</span>
-              <TherapyTypeSelect required value={bkTherapy} onChange={setBkTherapy} />
-            </label>
+              {/* Clinic (only for clinic sessions, admin) */}
+              {bkSessionType === 'clinic' && currentUser.role === 'admin' && (
+                <div className="bk-field">
+                  <span className="bk-label">Clinic</span>
+                  <select value={bkClinic} onChange={(e) => {
+                    setBkClinic(e.target.value);
+                    setBkPatient(data.patients.find((p) => p.clinicId === e.target.value)?.id ?? '');
+                  }}>
+                    {data.clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              )}
 
-            <label>Therapy level
-              <select value={bkLevel} onChange={(e) => setBkLevel(e.target.value as TherapyLevel)}>
-                <option value="basic">Basic</option>
-                <option value="rehab">Rehab</option>
-                <option value="advance">Advance</option>
-              </select>
-            </label>
-
-            {currentUser.role === 'admin' && (
-              <label>Clinic
-                <select value={bkClinic} onChange={(e) => setBkClinic(e.target.value)}>
-                  {data.clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {/* Patient */}
+              <div className="bk-field">
+                <span className="bk-label">Patient <span className="required">*</span></span>
+                <select required value={bkPatient} onChange={(e) => setBkPatient(e.target.value)}>
+                  <option value="">— select patient —</option>
+                  {(bkSessionType === 'home'
+                    ? data.patients.filter((p) => p.clinicId === null)
+                    : data.patients.filter((p) => bkClinic ? p.clinicId === bkClinic : p.clinicId !== null)
+                  ).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-              </label>
-            )}
+              </div>
 
-            <div className="form-actions">
-              <button type="submit" className="primary-button"><CalendarDays size={14} /> Schedule</button>
+              {/* Therapy type */}
+              <div className="bk-field">
+                <span className="bk-label">Therapy type <span className="required">*</span></span>
+                <TherapyTypeSelect required value={bkTherapy} onChange={setBkTherapy} />
+              </div>
+
+              {/* Therapy level */}
+              <div className="bk-field">
+                <span className="bk-label">Therapy level</span>
+                <div className="toggle-row">
+                  {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
+                    <button key={lvl} type="button"
+                      className={`toggle-btn level-${lvl}${bkLevel === lvl ? ' active' : ''}`}
+                      onClick={() => setBkLevel(lvl)}
+                    >{lvl.charAt(0).toUpperCase() + lvl.slice(1)}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="bk-modal-footer">
+              <button type="submit" className="primary-button">
+                <CalendarDays size={14} /> Schedule
+              </button>
               <button type="button" className="ghost-button" onClick={() => setBooking(null)}>Cancel</button>
             </div>
           </form>
@@ -3799,7 +3852,19 @@ function CalendarView({
 
       {/* ── Toolbar ── */}
       <div className="calendar-toolbar">
+        {/* Left: view toggle + nav — always on same row */}
         <div className="cal-nav-group">
+          <div className="view-toggle">
+            <button
+              className={`view-toggle-btn${view === 'day' ? ' active' : ''}`}
+              onClick={() => setView('day')}
+            ><Clock size={14} /> Day</button>
+            <button
+              className={`view-toggle-btn${view === 'month' ? ' active' : ''}`}
+              onClick={() => setView('month')}
+            ><CalendarDays size={14} /> Month</button>
+          </div>
+
           {view === 'month' ? (
             <>
               <button className="ghost-button icon-only" onClick={prevMonth}><ChevronLeft size={18} /></button>
@@ -3811,7 +3876,7 @@ function CalendarView({
           ) : (
             <>
               <button className="ghost-button icon-only" onClick={() => shiftDay(-1)}><ChevronLeft size={18} /></button>
-              <h2 className="calendar-month-title" style={{ fontSize: '1rem' }}>{dayLabel}</h2>
+              <h2 className="calendar-month-title">{dayLabel}</h2>
               <button className="ghost-button icon-only" onClick={() => shiftDay(1)}><ChevronRight size={18} /></button>
               <button className="ghost-button cal-today-btn"
                 onClick={() => setSelectedDate(todayStr)}>Today</button>
@@ -3819,23 +3884,12 @@ function CalendarView({
           )}
         </div>
 
-        <div className="cal-month-stats">
-          <span className="cal-stat scheduled"><Activity size={11} />{monthScheduled} scheduled</span>
-          <span className="cal-stat completed"><Check size={11} />{monthCompleted} done</span>
-          {monthRevenue > 0 && <span className="cal-stat revenue"><DollarSign size={11} />{formatCurrency(monthRevenue)}</span>}
-        </div>
-
+        {/* Right: stats + clinic filter */}
         <div className="cal-toolbar-right">
-          {/* View toggle */}
-          <div className="view-toggle">
-            <button
-              className={`view-toggle-btn${view === 'month' ? ' active' : ''}`}
-              onClick={() => setView('month')}
-            ><CalendarDays size={14} /> Month</button>
-            <button
-              className={`view-toggle-btn${view === 'day' ? ' active' : ''}`}
-              onClick={() => setView('day')}
-            ><Clock size={14} /> Day</button>
+          <div className="cal-month-stats">
+            <span className="cal-stat scheduled"><Activity size={11} />{monthScheduled} scheduled</span>
+            <span className="cal-stat completed"><Check size={11} />{monthCompleted} done</span>
+            {monthRevenue > 0 && <span className="cal-stat revenue"><DollarSign size={11} />{formatCurrency(monthRevenue)}</span>}
           </div>
           <select className="clinic-selector" value={selectedClinicId}
             onChange={(e) => setSelectedClinicId(e.target.value)}>

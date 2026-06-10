@@ -1051,21 +1051,28 @@ textarea { min-height: 76px; resize: vertical; }
 .calendar-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 .cal-nav-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 .calendar-month-title {
-  font-size: 1.05rem;
+  font-size: 0.95rem;
   font-weight: 800;
   margin: 0;
   color: var(--ink);
-  min-width: 175px;
+  white-space: nowrap;
   text-align: center;
 }
 .cal-today-btn {
@@ -1093,8 +1100,7 @@ textarea { min-height: 76px; resize: vertical; }
 .cal-stat.home      { background: var(--amber-light); color: var(--amber-dark); }
 .cal-stat.revenue   { background: var(--teal-light);  color: var(--teal-dark); }
 .clinic-selector {
-  margin-left: auto;
-  min-width: 180px;
+  min-width: 160px;
   min-height: 36px;
   font-size: 0.85rem;
 }
@@ -2113,7 +2119,9 @@ textarea { min-height: 76px; resize: vertical; }
 .cal-toolbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 /* ── View toggle (Month / Day) ── */
@@ -2314,6 +2322,90 @@ textarea { min-height: 76px; resize: vertical; }
   .metric-grid-5        { grid-template-columns: repeat(3, 1fr); }
   .dash-charts-row      { grid-template-columns: 1fr 1fr; }
   .home-schedule-grid   { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ── Book-slot modal ─────────────────────────────────────────────────────── */
+.bk-modal {
+  background: var(--surface);
+  border-radius: 18px;
+  box-shadow: 0 24px 64px rgba(15,23,42,0.22);
+  width: min(440px, calc(100vw - 32px));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: modalIn 0.15s ease;
+}
+.bk-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px 16px;
+  background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark, #0d7a6b) 100%);
+  color: #fff;
+}
+.bk-modal-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.2);
+  flex-shrink: 0;
+}
+.bk-modal-title-block { flex: 1; min-width: 0; }
+.bk-modal-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #fff;
+}
+.bk-modal-sub {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  color: rgba(255,255,255,0.82);
+}
+.bk-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.18);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+.bk-close-btn:hover { background: rgba(255,255,255,0.3); }
+
+.bk-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 20px 4px;
+}
+.bk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bk-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--slate);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.bk-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px 20px;
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
 }
 
 /* ── Multi-patient picker (calendar booking) ──────────────────────────────── */
