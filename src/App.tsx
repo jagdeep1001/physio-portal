@@ -27,7 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { demoPasswords, initialData } from './data/mockData';
 import {
@@ -2731,7 +2731,7 @@ function HomeVisitsView({
             </label>
             <label>
               Therapy type
-              <input required value={therapyType} onChange={(e) => setTherapyType(e.target.value)} />
+              <TherapyTypeSelect required value={therapyType} onChange={setTherapyType} />
             </label>
             <label>
               Level
@@ -2879,7 +2879,7 @@ function EditSessionModal({
 
         <label>
           Therapy type <span className="required">*</span>
-          <input required value={form.therapyType} onChange={(e) => set('therapyType', e.target.value)} />
+          <TherapyTypeSelect required value={form.therapyType} onChange={(v) => set('therapyType', v)} />
         </label>
 
         <label>
@@ -3058,12 +3058,7 @@ function RecordSessionModal({
 
             <label>
               Therapy type <span className="required">*</span>
-              <input
-                required
-                value={form.therapyType}
-                onChange={(e) => set('therapyType', e.target.value)}
-                placeholder="e.g. Ultrasound therapy, Manual therapy…"
-              />
+              <TherapyTypeSelect required value={form.therapyType} onChange={(v) => set('therapyType', v)} />
             </label>
 
             <div className="home-no-clinic-note">
@@ -3286,12 +3281,7 @@ function ScheduleNewPage({
                 <Plus size={13} /> {dualTherapy ? 'Dual therapy on' : 'Add 2nd therapy'}
               </button>
             </div>
-            <input
-              required
-              value={therapyType}
-              onChange={(e) => setTherapyType(e.target.value)}
-              placeholder="e.g. Manual therapy, Gait training…"
-            />
+            <TherapyTypeSelect required value={therapyType} onChange={setTherapyType} />
             <div className="toggle-row" style={{ marginTop: 6 }}>
               {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
                 <button key={lvl} type="button"
@@ -3310,12 +3300,7 @@ function ScheduleNewPage({
               <div className="dual-therapy-header">
                 <label className="dual-therapy-label">Therapy 2</label>
               </div>
-              <input
-                required
-                value={therapyType2}
-                onChange={(e) => setTherapyType2(e.target.value)}
-                placeholder="Second therapy type…"
-              />
+              <TherapyTypeSelect required value={therapyType2} onChange={setTherapyType2} />
               <div className="toggle-row" style={{ marginTop: 6 }}>
                 {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
                   <button key={lvl} type="button"
@@ -3785,7 +3770,7 @@ function CalendarView({
             </label>
 
             <label>Therapy type <span className="required">*</span>
-              <input required value={bkTherapy} onChange={(e) => setBkTherapy(e.target.value)} placeholder="e.g. Physiotherapy, Rehab" />
+              <TherapyTypeSelect required value={bkTherapy} onChange={setBkTherapy} />
             </label>
 
             <label>Therapy level
@@ -4491,6 +4476,137 @@ function SessionRow({
 function clinicName(clinics: Clinic[], clinicId: string | null | undefined) {
   if (!clinicId) return 'Home visit';
   return clinics.find((c) => c.id === clinicId)?.name ?? 'Unknown clinic';
+}
+
+// ─── Therapy type multi-select ────────────────────────────────────────────────
+
+const THERAPY_SEPARATOR = '|';
+
+const THERAPY_GROUPS = [
+  {
+    label: 'Basic',
+    options: ['US', 'TENS', 'IFT', 'Hot pack', 'WAX THERAPY', 'TRACTION (CERVICAL/LUMBAR)'],
+  },
+  {
+    label: 'Advanced',
+    options: [
+      'Cupping Static/Dynamic',
+      'Wet Cupping/Hijama',
+      'Dry Needling',
+      'IASTM',
+      'Taping',
+      'Fire Cupping',
+      'Electro Needling',
+    ],
+  },
+];
+
+function splitTherapyTypes(value: string): string[] {
+  return value ? value.split(THERAPY_SEPARATOR).map((s) => s.trim()).filter(Boolean) : [];
+}
+
+function TherapyTypeSelect({
+  value,
+  onChange,
+  required,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const selected = splitTherapyTypes(value);
+  const selectedSet = new Set(selected);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const toggle = (option: string, checked: boolean) => {
+    const next = checked
+      ? [...selected.filter((s) => s !== option), option]
+      : selected.filter((s) => s !== option);
+    onChange(next.join(THERAPY_SEPARATOR));
+  };
+
+  const removeItem = (option: string) => {
+    onChange(selected.filter((s) => s !== option).join(THERAPY_SEPARATOR));
+  };
+
+  return (
+    <div className="therapy-multiselect" ref={wrapRef}>
+      {/* Trigger button */}
+      <button
+        type="button"
+        className={`therapy-select-trigger${open ? ' open' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {selected.length > 0 ? (
+          <span className="therapy-trigger-chips">
+            {selected.map((item) => (
+              <span key={item} className="therapy-trigger-chip">
+                {item}
+                <span
+                  role="button"
+                  tabIndex={-1}
+                  className="therapy-chip-x"
+                  onClick={(e) => { e.stopPropagation(); removeItem(item); }}
+                >
+                  <X size={11} />
+                </span>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="therapy-trigger-placeholder">Select therapy type(s)</span>
+        )}
+        <ChevronRight size={14} className={`therapy-trigger-caret${open ? ' rotate-down' : ''}`} />
+      </button>
+
+      {/* Hidden required-validation proxy */}
+      <input
+        tabIndex={-1}
+        aria-hidden="true"
+        className="therapy-required-shadow"
+        required={required}
+        value={selected.length > 0 ? 'ok' : ''}
+        onChange={() => undefined}
+      />
+
+      {/* Dropdown menu */}
+      {open && (
+        <div className="therapy-dropdown-menu">
+          {THERAPY_GROUPS.map((group) => (
+            <div key={group.label} className="therapy-dropdown-group">
+              <span className="therapy-dropdown-title">{group.label}</span>
+              <div className="therapy-dropdown-options">
+                {group.options.map((option) => (
+                  <label key={option} className="therapy-check-option">
+                    <input
+                      type="checkbox"
+                      checked={selectedSet.has(option)}
+                      onChange={(e) => toggle(option, e.target.checked)}
+                    />
+                    <span>{option}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="therapy-dropdown-actions">
+            <button type="button" className="ghost-button" onClick={() => onChange('')}>Clear</button>
+            <button type="button" className="primary-button" onClick={() => setOpen(false)}>Done</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function pageTitle(page: Page) {
