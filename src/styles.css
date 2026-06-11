@@ -3046,6 +3046,10 @@ textarea { min-height: 76px; resize: vertical; }
 .home-schedule-notes {
   grid-column: span 2;
 }
+.home-schedule-grid .home-dual-block,
+.home-schedule-grid .home-dual-hint {
+  grid-column: 1 / -1;
+}
 .home-schedule-grid .form-actions {
   align-self: end;
 }

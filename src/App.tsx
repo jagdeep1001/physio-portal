@@ -3572,8 +3572,12 @@ function HomeVisitsView({
   const [patientId, setPatientId] = useState(preset.patientId ?? homePatients[0]?.id ?? '');
   const [therapyType, setTherapyType] = useState('Home Visit');
   const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>('basic');
+  const [dualTherapy, setDualTherapy] = useState(false);
+  const [therapyType2, setTherapyType2] = useState('');
+  const [therapyLevel2, setTherapyLevel2] = useState<TherapyLevel>('basic');
   const [startDate, setStartDate] = useState(todayStr);
   const [startTime, setStartTime] = useState('09:00');
+  const [startTime2, setStartTime2] = useState('11:00');
   const [visitCount, setVisitCount] = useState(1);
   const [freqDays, setFreqDays] = useState(1);
   const [amount, setAmount] = useState('');
@@ -3592,25 +3596,40 @@ function HomeVisitsView({
   const submitSchedule = (e: FormEvent) => {
     e.preventDefault();
     if (!patientId || !therapyType.trim() || !isHomeVisitSlot(startTime)) return;
+    if (dualTherapy && (!therapyType2.trim() || !isHomeVisitSlot(startTime2))) return;
+
     const count = Math.max(1, Math.min(visitCount, 60));
     const gap = Math.max(1, freqDays);
+    const parsedAmount = amount ? parseFloat(amount) : null;
+    const base = {
+      patientId,
+      clinicId: null,
+      sessionType: 'home' as const,
+      assignedStaffId: currentUser.id,
+      status: 'scheduled' as const,
+      completedAt: null,
+      notes,
+      treatmentNotes: '',
+      amountCollected: parsedAmount,
+    };
+
     for (let i = 0; i < count; i++) {
       const d = new Date(`${startDate}T${startTime}`);
       d.setDate(d.getDate() + i * gap);
       onAddSession({
-        patientId,
-        clinicId: null,
+        ...base,
         scheduledAt: formatLocalDateTimeFromDate(d, startTime),
         therapyType: therapyType.trim(),
-        sessionType: 'home',
         therapyLevel,
-        assignedStaffId: currentUser.id,
-        status: 'scheduled',
-        completedAt: null,
-        notes,
-        treatmentNotes: '',
-        amountCollected: amount ? parseFloat(amount) : null,
       });
+      if (dualTherapy && therapyType2.trim()) {
+        onAddSession({
+          ...base,
+          scheduledAt: formatLocalDateTimeFromDate(d, startTime2),
+          therapyType: therapyType2.trim(),
+          therapyLevel: therapyLevel2,
+        });
+      }
     }
   };
 
@@ -3675,7 +3694,7 @@ function HomeVisitsView({
 
       <section className="panel home-visit-scheduler">
         <div className="toolbar">
-          <PanelTitle title="Schedule home visits" subtitle="Home visits use 30-minute slots from 9 AM to 6 PM and do not require clinic assignment" />
+          <PanelTitle title="Schedule home visits" subtitle="9 AM–6 PM slots · optional dual timings per visit day" />
           {preset.patientId && (
             <button className="ghost-button" type="button" onClick={onClearPreset}>Clear patient preset</button>
           )}
@@ -3690,30 +3709,79 @@ function HomeVisitsView({
                 {homePatients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </label>
-            <label>
-              Therapy type
+
+            <div className="dual-therapy-block home-dual-block">
+              <div className="dual-therapy-header">
+                <label className="dual-therapy-label">
+                  {dualTherapy ? 'Therapy 1' : 'Therapy / treatment type'}
+                </label>
+                <button
+                  type="button"
+                  className={`toggle-btn ${dualTherapy ? 'active' : ''}`}
+                  onClick={() => setDualTherapy((v) => !v)}
+                >
+                  <Plus size={13} /> {dualTherapy ? 'Dual slot on' : 'Add 2nd slot'}
+                </button>
+              </div>
               <TherapyTypeSelect required value={therapyType} onChange={setTherapyType} />
-            </label>
-            <label>
-              Level
-              <select value={therapyLevel} onChange={(e) => setTherapyLevel(e.target.value as TherapyLevel)}>
-                <option value="basic">Basic</option>
-                <option value="rehab">Rehab</option>
-                <option value="advance">Advance</option>
-              </select>
-            </label>
+              <div className="toggle-row" style={{ marginTop: 6 }}>
+                {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
+                  <button key={lvl} type="button"
+                    className={`toggle-btn level-${lvl} ${therapyLevel === lvl ? 'active' : ''}`}
+                    onClick={() => setTherapyLevel(lvl)}
+                  >
+                    {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {dualTherapy && (
+              <div className="dual-therapy-block second home-dual-block">
+                <div className="dual-therapy-header">
+                  <label className="dual-therapy-label">Therapy 2</label>
+                </div>
+                <TherapyTypeSelect required value={therapyType2} onChange={setTherapyType2} />
+                <div className="toggle-row" style={{ marginTop: 6 }}>
+                  {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
+                    <button key={lvl} type="button"
+                      className={`toggle-btn level-${lvl} ${therapyLevel2 === lvl ? 'active' : ''}`}
+                      onClick={() => setTherapyLevel2(lvl)}
+                    >
+                      {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <label>
               Start date
               <input type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </label>
             <label>
-              Time slot
+              {dualTherapy ? 'Slot 1 time' : 'Time slot'}
               <select value={startTime} onChange={(e) => setStartTime(e.target.value)}>
                 {HOME_VISIT_SLOTS.map((slot) => (
                   <option key={slot} value={slot}>{formatVisitSlotLabel(slot)}</option>
                 ))}
               </select>
             </label>
+            {dualTherapy && (
+              <label>
+                Slot 2 time
+                <select value={startTime2} onChange={(e) => setStartTime2(e.target.value)}>
+                  {HOME_VISIT_SLOTS.map((slot) => (
+                    <option key={slot} value={slot}>{formatVisitSlotLabel(slot)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {dualTherapy && (
+              <small className="dual-slot-hint home-dual-hint">
+                Each visit day: {formatVisitSlotLabel(startTime)} and {formatVisitSlotLabel(startTime2)}
+              </small>
+            )}
             <label>
               Number of visits
               <input type="number" min="1" max="60" value={visitCount} onChange={(e) => setVisitCount(parseInt(e.target.value || '1', 10))} />
@@ -3731,7 +3799,12 @@ function HomeVisitsView({
               <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
             </label>
             <div className="form-actions">
-              <button className="primary-button" type="submit"><Plus size={15} /> Schedule home visits</button>
+              <button className="primary-button" type="submit">
+                <Plus size={15} />
+                {dualTherapy
+                  ? `Schedule ${visitCount * 2} home visit${visitCount * 2 !== 1 ? 's' : ''}`
+                  : `Schedule home visit${visitCount !== 1 ? 's' : ''}`}
+              </button>
             </div>
           </form>
         )}
