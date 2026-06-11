@@ -1,4 +1,5 @@
 import type { Clinic, Patient, Profile, TherapySession } from '../types';
+import { sessionDateKey } from '../lib/datetime';
 import { formatTherapyTypeDisplay } from '../lib/therapy';
 
 export interface InvoiceLineItem {
@@ -75,7 +76,7 @@ export function getBillableSessions(
     .filter((s) => s.patientId === patientId)
     .filter((s) => s.status === 'completed' && s.amountCollected !== null)
     .filter((s) => {
-      const date = s.scheduledAt.slice(0, 10);
+      const date = sessionDateKey(s.scheduledAt);
       if (from && date < from) return false;
       if (to && date > to) return false;
       return true;
@@ -98,7 +99,7 @@ export function sessionToLineItem(session: TherapySession, profiles: Profile[]):
 
   return {
     sessionId: session.id,
-    date: formatInvoiceDate(session.scheduledAt.slice(0, 10)),
+    date: formatInvoiceDate(sessionDateKey(session.scheduledAt)),
     description,
     amount: session.amountCollected ?? 0,
   };

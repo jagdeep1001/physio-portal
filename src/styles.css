@@ -464,6 +464,10 @@ small { color: var(--muted); font-size: 0.8rem; }
   background: #dbeafe;
   color: #1e40af;
 }
+.revenue-badge.expense {
+  background: #fff7ed;
+  color: #c2410c;
+}
 
 /* ── Clinic grid ── */
 .clinic-grid {
@@ -647,13 +651,96 @@ small { color: var(--muted); font-size: 0.8rem; }
   transition: width 400ms ease;
   min-width: 3px;
 }
+.horiz-bar-fill.expense {
+  background: linear-gradient(90deg, #f97316, #ef4444);
+}
 .horiz-bar-meta { display: flex; align-items: center; gap: 6px; }
 .horiz-bar-meta small { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+
+/* ── Dashboard expenses ── */
+.dash-expenses-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dash-exp-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dash-exp-kpi {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.dash-exp-kpi-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.dash-exp-kpi-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dash-exp-kpi-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.dash-exp-kpi-value {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.dash-exp-kpi-value.positive { color: #059669; }
+.dash-exp-kpi-value.negative { color: #dc2626; }
+
+.exp-kpi-red    { border-left: 4px solid #ef4444; }
+.exp-kpi-purple { border-left: 4px solid #8b5cf6; }
+.exp-kpi-green  { border-left: 4px solid #10b981; }
+.exp-kpi-slate  { border-left: 4px solid var(--slate); }
+
+.dash-exp-net-sub {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.dash-expenses-charts-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dash-expenses-charts-row .panel:only-child {
+  grid-column: 1 / -1;
+}
 
 /* ── Dashboard lists row ── */
 .dash-lists-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -680,6 +767,7 @@ small { color: var(--muted); font-size: 0.8rem; }
 }
 .compact-type-dot.clinic { background: var(--teal); }
 .compact-type-dot.home   { background: var(--amber); }
+.compact-type-dot.expense { background: #f97316; }
 .compact-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .compact-info strong { font-size: 0.85rem; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .compact-info small  { font-size: 0.72rem; color: var(--muted); }
@@ -3426,7 +3514,8 @@ textarea { min-height: 76px; resize: vertical; }
   .sidebar { position: static; height: auto; padding: 14px 16px; }
   nav { grid-template-columns: repeat(3, 1fr); }
   .user-card { margin-top: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .two-column, .workspace-grid, .schedule-new-layout, .dash-stats-row, .dash-lists-row { grid-template-columns: 1fr; }
+  .two-column, .workspace-grid, .schedule-new-layout, .dash-stats-row, .dash-expenses-charts-row, .dash-lists-row { grid-template-columns: 1fr; }
+  .dash-exp-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .clinic-grid { grid-template-columns: repeat(2, 1fr); }
   .dash-charts-row { grid-template-columns: 1fr; }
   .auth-layout { grid-template-columns: 1fr; }
@@ -3442,6 +3531,7 @@ textarea { min-height: 76px; resize: vertical; }
 @media (max-width: 720px) {
   .main { padding: 16px; }
   .metric-grid, .metric-grid-5 { grid-template-columns: 1fr 1fr; }
+  .dash-exp-kpi-grid { grid-template-columns: 1fr; }
   .home-schedule-grid, .home-schedule-notes { grid-template-columns: 1fr; grid-column: auto; }
   .clinic-grid, .form-two-col, .add-report-form, .record-session-grid { grid-template-columns: 1fr; }
   .topbar, .toolbar { flex-direction: column; align-items: stretch; }

@@ -62,6 +62,29 @@ import {
 import { InvoiceModal } from './components/InvoiceModal';
 import type { InvoiceMode } from './lib/invoice';
 import { formatTherapyTypeDisplay, splitTherapyTypes, THERAPY_GROUPS, THERAPY_SEPARATOR } from './lib/therapy';
+import {
+  buildLocalDateTime,
+  formatLocalDateFromDate,
+  formatLocalDateTimeFromDate,
+  formatSessionDateTime,
+  formatSessionTime,
+  genVisitSlots,
+  formatVisitSlotLabel,
+  HOME_VISIT_SLOTS,
+  isHomeVisitSlot,
+  localDateTimeInputValue,
+  localTodayStr,
+  parseAppDate,
+  parseScheduledAt,
+  sessionDateKey,
+  sessionInMonth,
+  sessionOnDate,
+  sessionTimeKey,
+  snapToHomeVisitSlot,
+  toDateTimeLocalInput,
+  toDbScheduledAt,
+  withLocalTime,
+} from './lib/datetime';
 import type {
   AppData,
   Clinic,
@@ -103,7 +126,7 @@ type PatientDraft = Omit<Patient, 'id' | 'active'>;
 type ClinicDraft = Omit<Clinic, 'id' | 'active'>;
 
 const storageKey = 'physio-care-demo-data';
-const todayStr = new Date().toISOString().slice(0, 10);
+const todayStr = localTodayStr();
 
 const emptyHomeVisitDetails = (): HomeVisitDetails => ({
   caregiverName: '',
@@ -189,20 +212,14 @@ function createDbId() {
 }
 
 function formatDateTime(value: string) {
-  if (!value) return '';
-  return new Intl.DateTimeFormat('en', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(value));
+  return formatSessionDateTime(value);
 }
 
 function formatDate(value: string) {
   if (!value) return '';
-  return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(
-    new Date(value)
-  );
+  const d = parseAppDate(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
 }
 
 function calculateAge(dateOfBirth: string) {
@@ -521,7 +538,7 @@ export function App() {
         if ('therapyType' in updates)   row.therapy_type     = updates.therapyType;
         if ('sessionType' in updates)   row.session_type     = updates.sessionType;
         if ('therapyLevel' in updates)  row.therapy_level    = updates.therapyLevel;
-        if ('scheduledAt' in updates)   row.scheduled_at     = updates.scheduledAt;
+        if ('scheduledAt' in updates)   row.scheduled_at     = toDbScheduledAt(updates.scheduledAt!);
         if ('notes' in updates)         row.notes            = updates.notes;
         const update = await supabase.from('therapy_sessions').update(row).eq('id', sessionId);
         if (update.error) throw update.error;
@@ -1123,21 +1140,22 @@ function Dashboard({
     .filter((s) => s.status === 'scheduled' && s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
   const activePatients = dashboardPatients.filter((p) => p.active).length;
-  const todayClinic    = allSessions.filter((s) => s.scheduledAt.startsWith(today) && s.sessionType === 'clinic').length;
+  const todayClinic    = allSessions.filter((s) => sessionOnDate(s.scheduledAt, today) && s.sessionType === 'clinic').length;
   const clinicSessions = allSessions.filter((s) => s.sessionType === 'clinic').length;
   const totalSessions  = allSessions.length;
   const completionRate = totalSessions > 0 ? Math.round((completedSess / totalSessions) * 100) : 0;
 
   // ── Weekly volume (last 7 days) ──
   const weekDays = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(today);
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
     d.setDate(d.getDate() - (6 - i));
-    return d.toISOString().slice(0, 10);
+    return formatLocalDateFromDate(d);
   });
   const weeklyVolume = weekDays.map((dateStr) => ({
     label: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(new Date(dateStr + 'T12:00')),
     dateStr,
-    clinic: allSessions.filter((s) => s.scheduledAt.startsWith(dateStr) && s.sessionType === 'clinic').length,
+    clinic: allSessions.filter((s) => sessionOnDate(s.scheduledAt, dateStr) && s.sessionType === 'clinic').length,
   }));
   const maxWeekly = Math.max(...weeklyVolume.map((d) => d.clinic), 1);
 
@@ -1145,7 +1163,7 @@ function Dashboard({
   const weeklyRevenue = weekDays.map((dateStr) => ({
     dateStr,
     amount: allSessions
-      .filter((s) => s.status === 'completed' && s.amountCollected !== null && s.scheduledAt.startsWith(dateStr))
+      .filter((s) => s.status === 'completed' && s.amountCollected !== null && sessionOnDate(s.scheduledAt, dateStr))
       .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0),
   }));
   const maxRevenue = Math.max(...weeklyRevenue.map((d) => d.amount), 1);
@@ -1155,12 +1173,49 @@ function Dashboard({
   const revenueClinics = data.clinics.filter((clinic) => clinicFilter === 'all' || clinic.id === clinicFilter);
   const clinicRevenue = revenueClinics.map((clinic) => {
     const amount = allSessions
-      .filter((s) => s.clinicId === clinic.id && s.status === 'completed' && s.amountCollected !== null && s.scheduledAt.startsWith(thisMonth))
+      .filter((s) => s.clinicId === clinic.id && s.status === 'completed' && s.amountCollected !== null && sessionInMonth(s.scheduledAt, thisMonth))
       .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
-    const count = allSessions.filter((s) => s.clinicId === clinic.id && s.scheduledAt.startsWith(thisMonth)).length;
+    const count = allSessions.filter((s) => s.clinicId === clinic.id && sessionInMonth(s.scheduledAt, thisMonth)).length;
     return { clinic, amount, count };
   });
   const maxClinicRev = Math.max(...clinicRevenue.map((c) => c.amount), 1);
+
+  // ── Clinic expenses (filtered by clinic) ──
+  const thisYear = today.slice(0, 4);
+  const visibleClinicIds = revenueClinics.map((c) => c.id);
+  const filteredExpenses = (allData.expenses ?? []).filter((e) =>
+    clinicFilter === 'all' ? visibleClinicIds.includes(e.clinicId) : e.clinicId === clinicFilter
+  );
+  const expensesThisMonth = filteredExpenses
+    .filter((e) => e.date.startsWith(thisMonth))
+    .reduce((sum, e) => sum + e.amount, 0);
+  const expensesThisYear = filteredExpenses
+    .filter((e) => e.date.startsWith(thisYear))
+    .reduce((sum, e) => sum + e.amount, 0);
+  const monthRevenue = allSessions
+    .filter((s) => s.status === 'completed' && s.amountCollected !== null && sessionInMonth(s.scheduledAt, thisMonth))
+    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const netThisMonth = monthRevenue - expensesThisMonth;
+  const expenseCategories: ExpenseCategory[] = ['Rent', 'Utilities', 'Salaries', 'Supplies', 'Maintenance', 'Other'];
+  const expensesByCategory = expenseCategories
+    .map((cat) => ({
+      cat,
+      total: filteredExpenses
+        .filter((e) => e.category === cat && e.date.startsWith(thisMonth))
+        .reduce((sum, e) => sum + e.amount, 0),
+    }))
+    .filter((r) => r.total > 0);
+  const maxExpenseCategory = Math.max(...expensesByCategory.map((r) => r.total), 1);
+  const clinicExpenses = revenueClinics.map((clinic) => ({
+    clinic,
+    amount: filteredExpenses
+      .filter((e) => e.clinicId === clinic.id && e.date.startsWith(thisMonth))
+      .reduce((sum, e) => sum + e.amount, 0),
+  }));
+  const maxClinicExpense = Math.max(...clinicExpenses.map((c) => c.amount), 1);
+  const recentExpenses = [...filteredExpenses]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 5);
 
   // ── Upcoming list ──
   const upcoming = allSessions
@@ -1344,6 +1399,96 @@ function Dashboard({
         </div>
       </section>
 
+      {/* ── Row 3b: Clinic expenses ── */}
+      <section className="panel dash-expenses-overview">
+        <PanelTitle title="Clinic expenses" subtitle={`${thisMonth} · ${clinicFilter === 'all' ? 'All clinics' : revenueClinics[0]?.name ?? 'Selected clinic'}`} />
+        <div className="dash-exp-kpi-grid">
+          <div className="dash-exp-kpi exp-kpi-red">
+            <span className="dash-exp-kpi-icon">💸</span>
+            <div className="dash-exp-kpi-body">
+              <span className="dash-exp-kpi-label">This month</span>
+              <strong className="dash-exp-kpi-value">{formatCurrency(expensesThisMonth)}</strong>
+            </div>
+          </div>
+          <div className="dash-exp-kpi exp-kpi-purple">
+            <span className="dash-exp-kpi-icon">📊</span>
+            <div className="dash-exp-kpi-body">
+              <span className="dash-exp-kpi-label">This year</span>
+              <strong className="dash-exp-kpi-value">{formatCurrency(expensesThisYear)}</strong>
+            </div>
+          </div>
+          <div className="dash-exp-kpi exp-kpi-green">
+            <span className="dash-exp-kpi-icon">📈</span>
+            <div className="dash-exp-kpi-body">
+              <span className="dash-exp-kpi-label">Net this month</span>
+              <strong className={`dash-exp-kpi-value ${netThisMonth >= 0 ? 'positive' : 'negative'}`}>
+                {formatCurrency(netThisMonth)}
+              </strong>
+              <small className="dash-exp-net-sub">Revenue {formatCurrency(monthRevenue)} − expenses</small>
+            </div>
+          </div>
+          <div className="dash-exp-kpi exp-kpi-slate">
+            <span className="dash-exp-kpi-icon">🗂</span>
+            <div className="dash-exp-kpi-body">
+              <span className="dash-exp-kpi-label">Records</span>
+              <strong className="dash-exp-kpi-value">{filteredExpenses.length}</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="dash-expenses-charts-row">
+        <div className="panel">
+          <PanelTitle title="Expenses by category" subtitle={`This month · ${thisMonth}`} />
+          {expensesByCategory.length === 0 ? (
+            <EmptyState message="No expenses recorded this month" />
+          ) : (
+            <div className="horiz-bars">
+              {expensesByCategory.map(({ cat, total }) => (
+                <div key={cat} className="horiz-bar-row">
+                  <span className="horiz-bar-label">{cat}</span>
+                  <div className="horiz-bar-track">
+                    <div
+                      className="horiz-bar-fill expense"
+                      style={{ width: `${maxExpenseCategory > 0 ? (total / maxExpenseCategory) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <div className="horiz-bar-meta">
+                    <span className="revenue-badge expense">{formatCurrency(total)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {clinicFilter === 'all' && (
+          <div className="panel">
+            <PanelTitle title="Expenses by clinic" subtitle={`This month · ${thisMonth}`} />
+            {clinicExpenses.every((c) => c.amount === 0) ? (
+              <EmptyState message="No expenses recorded this month" />
+            ) : (
+              <div className="horiz-bars">
+                {clinicExpenses.filter((c) => c.amount > 0).map(({ clinic, amount }) => (
+                  <div key={clinic.id} className="horiz-bar-row">
+                    <span className="horiz-bar-label">{clinic.name}</span>
+                    <div className="horiz-bar-track">
+                      <div
+                        className="horiz-bar-fill expense"
+                        style={{ width: `${maxClinicExpense > 0 ? (amount / maxClinicExpense) * 100 : 0}%` }}
+                      />
+                    </div>
+                    <div className="horiz-bar-meta">
+                      <span className="revenue-badge expense">{formatCurrency(amount)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       {/* ── Row 4: Upcoming + recent patients ── */}
       <section className="dash-lists-row">
         <div className="panel">
@@ -1386,6 +1531,32 @@ function Dashboard({
                     </div>
                     <span className="compact-count">{sessCount} sess.</span>
                   </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="panel">
+          <PanelTitle title="Recent expenses" subtitle="Latest clinic costs" />
+          {recentExpenses.length === 0 ? (
+            <EmptyState message="No expenses recorded yet" />
+          ) : (
+            <div className="compact-list">
+              {recentExpenses.map((expense) => {
+                const clinic = data.clinics.find((c) => c.id === expense.clinicId);
+                return (
+                  <div key={expense.id} className="compact-row">
+                    <span className="compact-type-dot expense" />
+                    <div className="compact-info">
+                      <strong>{expense.category}</strong>
+                      <small>
+                        {clinic?.name ?? 'Clinic'} · {formatDate(expense.date)}
+                        {expense.notes ? ` · ${expense.notes.slice(0, 36)}${expense.notes.length > 36 ? '…' : ''}` : ''}
+                      </small>
+                    </div>
+                    <span className="revenue-badge expense">{formatCurrency(expense.amount)}</span>
+                  </div>
                 );
               })}
             </div>
@@ -1467,7 +1638,7 @@ function HomeDashboard({
   const homePatients = data.patients.filter((p) => p.homeVisitDetails || homePatientIds.has(p.id));
   const completed = homeSessions.filter((s) => s.status === 'completed');
   const scheduled = homeSessions.filter((s) => s.status === 'scheduled');
-  const todayHome = homeSessions.filter((s) => s.scheduledAt.startsWith(today)).length;
+  const todayHome = homeSessions.filter((s) => sessionOnDate(s.scheduledAt, today)).length;
   const upcoming = scheduled
     .filter((s) => s.scheduledAt >= today)
     .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))
@@ -2018,7 +2189,7 @@ function PatientDetailView({
                   delete notes[date];
                   const updated: HomeVisitDetails = { ...hvd, homeSessionLog: log.filter((d) => d !== date), homeSessionNotes: notes };
                   const matchingSession = patientSessions.find(
-                    (s) => s.sessionType === 'home' && s.scheduledAt.startsWith(date) && s.status === 'completed'
+                    (s) => s.sessionType === 'home' && sessionOnDate(s.scheduledAt, date) && s.status === 'completed'
                   );
                   onSyncHomeVisitLog(patient.id, buildPayload(updated),
                     matchingSession
@@ -2028,18 +2199,18 @@ function PatientDetailView({
                 } else {
                   notes[date] = record;
                   const updated: HomeVisitDetails = { ...hvd, homeSessionLog: log.includes(date) ? log : [...log, date], homeSessionNotes: notes };
-                  const existingSession = patientSessions.find((s) => s.sessionType === 'home' && s.scheduledAt.startsWith(date));
+                  const existingSession = patientSessions.find((s) => s.sessionType === 'home' && sessionOnDate(s.scheduledAt, date));
                   onSyncHomeVisitLog(patient.id, buildPayload(updated),
                     existingSession
                       ? { action: 'update', sessionId: existingSession.id, updates: {
-                          status: 'completed', completedAt: `${date}T12:00:00.000Z`,
+                          status: 'completed', completedAt: buildLocalDateTime(date, '12:00'),
                           treatmentNotes: record.notes, amountCollected: record.amount,
                         }}
                       : { action: 'create', session: {
                           patientId: patient.id, clinicId: null,
                           sessionType: 'home', therapyType: 'Home Visit', therapyLevel: 'basic',
-                          assignedStaffId: '', scheduledAt: `${date}T09:00:00.000Z`,
-                          status: 'completed', completedAt: `${date}T09:00:00.000Z`,
+                          assignedStaffId: '', scheduledAt: buildLocalDateTime(date, '09:00'),
+                          status: 'completed', completedAt: buildLocalDateTime(date, '09:00'),
                           notes: '', treatmentNotes: record.notes, amountCollected: record.amount,
                         }}
                   );
@@ -2085,8 +2256,8 @@ function PatientDetailView({
                 {patientSessions.map((session) => (
                   <div key={session.id} className={`pp-session-item status-${session.status}`}>
                     <div className="pp-session-date">
-                      <span className="pp-session-day">{new Intl.DateTimeFormat('en', { day: 'numeric' }).format(new Date(session.scheduledAt))}</span>
-                      <span className="pp-session-mon">{new Intl.DateTimeFormat('en', { month: 'short' }).format(new Date(session.scheduledAt))}</span>
+                      <span className="pp-session-day">{new Intl.DateTimeFormat('en', { day: 'numeric' }).format(parseScheduledAt(session.scheduledAt))}</span>
+                      <span className="pp-session-mon">{new Intl.DateTimeFormat('en', { month: 'short' }).format(parseScheduledAt(session.scheduledAt))}</span>
                     </div>
                     <div className="pp-session-body">
                       <div className="pp-session-top">
@@ -2196,7 +2367,7 @@ function HomeVisitPanel({
   const prevLogMonth = () => { if (logMonth === 0) { setLogMonth(11); setLogYear((y) => y - 1); } else setLogMonth((m) => m - 1); };
   const nextLogMonth = () => { if (logMonth === 11) { setLogMonth(0); setLogYear((y) => y + 1); } else setLogMonth((m) => m + 1); };
 
-  const sessionDates = new Set(homeVisitSessions.map((s) => s.scheduledAt.slice(0, 10)));
+  const sessionDates = new Set(homeVisitSessions.map((s) => sessionDateKey(s.scheduledAt)));
 
   return (
     <section className="panel home-visit-panel">
@@ -3280,7 +3451,7 @@ function SessionsView({
                           // Group sessions by calendar date
                           const byDate = new Map<string, TherapySession[]>();
                           sessions.forEach((s) => {
-                            const key = s.scheduledAt.slice(0, 10);
+                            const key = sessionDateKey(s.scheduledAt);
                             if (!byDate.has(key)) byDate.set(key, []);
                             byDate.get(key)!.push(s);
                           });
@@ -3310,7 +3481,7 @@ function SessionsView({
                                           <Building2 size={10} /> {clinicName(allClinics, session.clinicId)}
                                         </small>
                                         <span className="group-session-meta-sep">·</span>
-                                        <small className="session-slot-time"><Clock size={10} /> {session.scheduledAt.slice(11, 16)}</small>
+                                        <small className="session-slot-time"><Clock size={10} /> {formatSessionTime(session.scheduledAt)}</small>
                                       </div>
                                       {session.treatmentNotes && <p className="clinical-note">{session.treatmentNotes}</p>}
                                     </div>
@@ -3420,7 +3591,7 @@ function HomeVisitsView({
 
   const submitSchedule = (e: FormEvent) => {
     e.preventDefault();
-    if (!patientId || !therapyType.trim()) return;
+    if (!patientId || !therapyType.trim() || !isHomeVisitSlot(startTime)) return;
     const count = Math.max(1, Math.min(visitCount, 60));
     const gap = Math.max(1, freqDays);
     for (let i = 0; i < count; i++) {
@@ -3429,7 +3600,7 @@ function HomeVisitsView({
       onAddSession({
         patientId,
         clinicId: null,
-        scheduledAt: d.toISOString(),
+        scheduledAt: formatLocalDateTimeFromDate(d, startTime),
         therapyType: therapyType.trim(),
         sessionType: 'home',
         therapyLevel,
@@ -3538,7 +3709,9 @@ function HomeVisitsView({
             <label>
               Time slot
               <select value={startTime} onChange={(e) => setStartTime(e.target.value)}>
-                {Array.from(HOME_SLOTS).map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+                {HOME_VISIT_SLOTS.map((slot) => (
+                  <option key={slot} value={slot}>{formatVisitSlotLabel(slot)}</option>
+                ))}
               </select>
             </label>
             <label>
@@ -3711,7 +3884,9 @@ function EditSessionModal({
     therapyType:   session.therapyType,
     sessionType:   session.sessionType as SessionType,
     therapyLevel:  session.therapyLevel as TherapyLevel,
-    scheduledAt:   session.scheduledAt.slice(0, 16),
+    scheduledAt:   toDateTimeLocalInput(session.scheduledAt),
+    homeDate:      sessionDateKey(session.scheduledAt),
+    homeTime:      snapToHomeVisitSlot(sessionTimeKey(session.scheduledAt)),
     notes:         session.notes,
   });
 
@@ -3719,11 +3894,14 @@ function EditSessionModal({
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+    const scheduledAt = form.sessionType === 'home'
+      ? buildLocalDateTime(form.homeDate, form.homeTime)
+      : form.scheduledAt;
     onSave({
       therapyType:  form.therapyType,
       sessionType:  form.sessionType,
       therapyLevel: form.therapyLevel,
-      scheduledAt:  form.scheduledAt,
+      scheduledAt,
       notes:        form.notes,
     });
   };
@@ -3749,13 +3927,34 @@ function EditSessionModal({
           </label>
           <label>
             Date &amp; time
-            <input type="datetime-local" value={form.scheduledAt} onChange={(e) => set('scheduledAt', e.target.value)} />
+            {form.sessionType === 'home' ? (
+              <div className="form-two-col" style={{ marginTop: 6 }}>
+                <input type="date" required value={form.homeDate} onChange={(e) => set('homeDate', e.target.value)} />
+                <select value={form.homeTime} onChange={(e) => set('homeTime', e.target.value)}>
+                  {HOME_VISIT_SLOTS.map((slot) => (
+                    <option key={slot} value={slot}>{formatVisitSlotLabel(slot)}</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <input type="datetime-local" value={form.scheduledAt} onChange={(e) => set('scheduledAt', e.target.value)} />
+            )}
           </label>
           <label>
             Session type
             <div className="toggle-row">
               {(['clinic', 'home'] as SessionType[]).map((t) => (
-                <button key={t} type="button" className={`toggle-btn ${form.sessionType === t ? 'active' : ''}`} onClick={() => set('sessionType', t)}>
+                <button
+                  key={t}
+                  type="button"
+                  className={`toggle-btn ${form.sessionType === t ? 'active' : ''}`}
+                  onClick={() => setForm((f) => ({
+                    ...f,
+                    sessionType: t,
+                    homeTime: t === 'home' ? snapToHomeVisitSlot(sessionTimeKey(f.scheduledAt)) : f.homeTime,
+                    homeDate: t === 'home' ? sessionDateKey(f.scheduledAt) : f.homeDate,
+                  }))}
+                >
                   {t === 'clinic' ? <Stethoscope size={13} /> : <Home size={13} />}
                   {t === 'clinic' ? 'Clinic' : 'Home visit'}
                 </button>
@@ -3809,10 +4008,7 @@ function generateDates(
     return d;
   };
 
-  const toISO = (d: Date) => {
-    const dateStr = d.toISOString().slice(0, 10);
-    return `${dateStr}T${startTime}`;
-  };
+  const toISO = (d: Date) => formatLocalDateTimeFromDate(d, startTime);
 
   const start = new Date(`${startDate}T${startTime}`);
   if (isNaN(start.getTime())) return dates;
@@ -3848,11 +4044,7 @@ function RecordSessionModal({
   onSave: (session: Omit<TherapySession, 'id'>) => void;
   onClose: () => void;
 }) {
-  const nowLocal = (() => {
-    const d = new Date();
-    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-    return d.toISOString().slice(0, 16);
-  })();
+  const nowLocal = localDateTimeInputValue();
 
   const [form, setForm] = useState({
     patientId: '',
@@ -4072,7 +4264,7 @@ function ScheduleNewPage({
     const base = { patientId, clinicId, sessionType, assignedStaffId, notes, status: 'scheduled' as const, completedAt: null, treatmentNotes: '', amountCollected: amount };
 
     // Helper: replace just the time component of an ISO datetime string
-    const withTime = (iso: string, hhmm: string) => iso.slice(0, 10) + 'T' + hhmm;
+    const withTime = (iso: string, hhmm: string) => withLocalTime(iso, hhmm);
 
     setSubmitting(true);
     previewDates.forEach((scheduledAt) => {
@@ -4402,7 +4594,7 @@ function ScheduleNewPage({
                   // Group preview dates by calendar date; also include therapy-2 slot
                   const byDate = new Map<string, string[]>();
                   previewDates.forEach((dt) => {
-                    const dateKey = dt.slice(0, 10);
+                    const dateKey = sessionDateKey(dt);
                     if (!byDate.has(dateKey)) byDate.set(dateKey, []);
                     byDate.get(dateKey)!.push(dt);
                     if (dualTherapy && startTime2) {
@@ -4417,7 +4609,7 @@ function ScheduleNewPage({
                         <div className="preview-date-header">{dateLabel}</div>
                         {slots.map((slot, si) => {
                           sessionNum++;
-                          const time = slot.slice(11, 16);
+                          const time = sessionTimeKey(slot);
                           const label = dualTherapy
                             ? si === 0
                               ? `${formatTherapyTypeDisplay(therapyType) || 'Therapy 1'} · ${therapyLevel}`
@@ -4446,18 +4638,7 @@ function ScheduleNewPage({
 
 // ─── Calendar View ────────────────────────────────────────────────────────────
 
-// ── Time slot helpers ─────────────────────────────────────────────────────────
-function genSlots(startH: number, endH: number): string[] {
-  const out: string[] = [];
-  for (let h = startH; h < endH; h++) {
-    out.push(`${String(h).padStart(2, '0')}:00`);
-    out.push(`${String(h).padStart(2, '0')}:30`);
-  }
-  return out;
-}
-const HOME_SLOTS   = new Set(genSlots(9, 18));  // 09:00 – 17:30
-const CLINIC_SLOTS = new Set(genSlots(9, 21));  // 09:00 – 20:30
-const ALL_DAY_SLOTS = genSlots(9, 21);           // full axis for display
+const CLINIC_DAY_SLOTS = genVisitSlots(9, 21);  // 09:00 – 20:30
 
 function CalendarView({
   data, allClinics, currentUser, onOpenPatient, onAddSession,
@@ -4486,7 +4667,6 @@ function CalendarView({
   const [bkTherapy, setBkTherapy]       = useState('');
   const [bkLevel, setBkLevel]           = useState<TherapyLevel>('basic');
   const [bkClinic, setBkClinic]         = useState('');
-  const [bkSessionType, setBkSessionType] = useState<SessionType>('clinic');
 
   const clinicsForSelector = currentUser.role === 'admin' ? allClinics : data.clinics;
 
@@ -4499,7 +4679,7 @@ function CalendarView({
   const shiftDay = (delta: number) => {
     const d = new Date(selectedDate + 'T12:00');
     d.setDate(d.getDate() + delta);
-    setSelectedDate(d.toISOString().slice(0, 10));
+    setSelectedDate(formatLocalDateFromDate(d));
   };
   const dayLabel = new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     .format(new Date(selectedDate + 'T12:00'));
@@ -4522,16 +4702,15 @@ function CalendarView({
   const filteredSessions = data.therapySessions.filter((s) =>
     s.sessionType === 'clinic' && (selectedClinicId === 'all' || s.clinicId === selectedClinicId)
   );
-  const sessionsByDate  = (ds: string) => filteredSessions.filter((s) => s.scheduledAt.startsWith(ds));
-  const daySessions     = filteredSessions.filter((s) => s.scheduledAt.startsWith(selectedDate));
+  const sessionsByDate  = (ds: string) => filteredSessions.filter((s) => sessionOnDate(s.scheduledAt, ds));
+  const daySessions     = filteredSessions.filter((s) => sessionOnDate(s.scheduledAt, selectedDate));
   const sessionsAt      = (time: string, type: SessionType) =>
-    daySessions.filter((s) => s.scheduledAt.slice(11, 16) === time && s.sessionType === type);
+    daySessions.filter((s) => sessionTimeKey(s.scheduledAt) === time && s.sessionType === type);
   const todayDateStr    = todayStr;
 
   const bookablePatients = useMemo(() => {
-    if (bkSessionType === 'home') return data.patients.filter((p) => p.clinicId === null);
     return data.patients.filter((p) => (bkClinic ? p.clinicId === bkClinic : p.clinicId !== null));
-  }, [data.patients, bkSessionType, bkClinic]);
+  }, [data.patients, bkClinic]);
 
   const pruneBkPatients = (validIds: Set<string>) => {
     setBkPatients((prev) => prev.filter((id) => validIds.has(id)));
@@ -4545,7 +4724,7 @@ function CalendarView({
 
   // Monthly stats
   const monthStr       = `${year}-${String(month + 1).padStart(2, '0')}`;
-  const monthSessions  = filteredSessions.filter((s) => s.scheduledAt.startsWith(monthStr));
+  const monthSessions  = filteredSessions.filter((s) => sessionInMonth(s.scheduledAt, monthStr));
   const monthScheduled = monthSessions.filter((s) => s.status === 'scheduled').length;
   const monthCompleted = monthSessions.filter((s) => s.status === 'completed').length;
   const monthRevenue   = monthSessions.filter((s) => s.status === 'completed' && s.amountCollected !== null)
@@ -4556,7 +4735,6 @@ function CalendarView({
     const cId = selectedClinicId !== 'all'
       ? selectedClinicId
       : (data.clinics[0]?.id ?? '');
-    setBkSessionType('clinic');
     setBkClinic(cId);
     setBkMulti(false);
     setBkPatients([]);
@@ -4572,10 +4750,10 @@ function CalendarView({
     if (!booking || patientIds.length === 0 || !bkTherapy.trim()) return;
 
     const base = {
-      clinicId:        bkSessionType === 'home' ? null : (bkClinic || booking.clinicId),
-      scheduledAt:     `${booking.date}T${booking.time}:00.000Z`,
+      clinicId:        bkClinic || booking.clinicId,
+      scheduledAt:     buildLocalDateTime(booking.date, booking.time),
       therapyType:     bkTherapy.trim(),
-      sessionType:     bkSessionType,
+      sessionType:     'clinic' as const,
       therapyLevel:    bkLevel,
       assignedStaffId: currentUser.id,
       status:          'scheduled' as const,
@@ -4595,9 +4773,9 @@ function CalendarView({
     const patient  = data.patients.find((p) => p.id === popover.patientId);
     const clinic   = allClinics.find((c) => c.id === popover.clinicId);
     const isHome   = popover.sessionType === 'home';
-    const time     = popover.scheduledAt.slice(11, 16);
+    const time     = formatSessionTime(popover.scheduledAt);
     const dateDisp = new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
-      .format(new Date(popover.scheduledAt.slice(0, 10) + 'T12:00'));
+      .format(parseScheduledAt(popover.scheduledAt));
     return (
       <div className="modal-backdrop" onClick={() => setPopover(null)}>
         <div className="cal-popover" onClick={(e) => e.stopPropagation()}>
@@ -4668,47 +4846,20 @@ function CalendarView({
             <div className="modal-accent modal-accent-teal" />
             <div className="modal-header">
               <div className="modal-header-icon">
-                {bkSessionType === 'home' ? <Home size={18} /> : <Stethoscope size={18} />}
+                <Stethoscope size={18} />
               </div>
               <div>
-                <h3 className="modal-title">Book slot</h3>
+                <h3 className="modal-title">Book clinic slot</h3>
                 <p className="modal-sub">
                   {new Intl.DateTimeFormat('en', { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(booking.date + 'T12:00'))}
-                  {' · '}{booking.time}
+                  {' · '}{formatVisitSlotLabel(booking.time)}
                 </p>
               </div>
               <button type="button" className="icon-btn" onClick={() => setBooking(null)}><X size={18} /></button>
             </div>
 
             <div className="bk-modal-body">
-              <div className="bk-field">
-                <span className="bk-label">Session type</span>
-                <div className="toggle-row">
-                  <button type="button"
-                    className={`toggle-btn${bkSessionType === 'clinic' ? ' active' : ''}`}
-                    onClick={() => {
-                      setBkSessionType('clinic');
-                      const cId = selectedClinicId !== 'all' ? selectedClinicId : (data.clinics[0]?.id ?? '');
-                      setBkClinic(cId);
-                      const next = data.patients.filter((p) => p.clinicId === cId);
-                      setBkPatient(next[0]?.id ?? '');
-                      pruneBkPatients(new Set(next.map((p) => p.id)));
-                    }}
-                  ><Stethoscope size={13} /> Clinic</button>
-                  <button type="button"
-                    className={`toggle-btn${bkSessionType === 'home' ? ' active' : ''}`}
-                    onClick={() => {
-                      setBkSessionType('home');
-                      setBkClinic('');
-                      const next = data.patients.filter((p) => p.clinicId === null);
-                      setBkPatient(next[0]?.id ?? '');
-                      pruneBkPatients(new Set(next.map((p) => p.id)));
-                    }}
-                  ><Home size={13} /> Home visit</button>
-                </div>
-              </div>
-
-              {bkSessionType === 'clinic' && currentUser.role === 'admin' && (
+              {currentUser.role === 'admin' && (
                 <div className="bk-field">
                   <span className="bk-label">Clinic</span>
                   <select value={bkClinic} onChange={(e) => {
@@ -4900,10 +5051,10 @@ function CalendarView({
                             <button key={s.id}
                               className={`cal-session-chip ${s.sessionType === 'home' ? 'home' : 'clinic'} level-${s.therapyLevel ?? 'basic'} status-${s.status}`}
                               onClick={() => setPopover(s)}
-                              title={`${formatTherapyTypeDisplay(s.therapyType)} · ${s.scheduledAt.slice(11, 16)} [${s.therapyLevel ?? 'basic'}]`}
+                              title={`${formatTherapyTypeDisplay(s.therapyType)} · ${formatSessionTime(s.scheduledAt)} [${s.therapyLevel ?? 'basic'}]`}
                             >
                               {s.sessionType === 'home' ? <Home size={9} /> : <Stethoscope size={9} />}
-                              <span className="chip-time">{s.scheduledAt.slice(11, 16)}</span>
+                              <span className="chip-time">{formatSessionTime(s.scheduledAt)}</span>
                               <span className="chip-label">{formatTherapyTypeDisplay(s.therapyType).slice(0, 16)}</span>
                             </button>
                           ))}
@@ -4947,7 +5098,7 @@ function CalendarView({
 
           {/* Time slot rows */}
           <div className="day-view-grid">
-            {ALL_DAY_SLOTS.map((time) => {
+            {CLINIC_DAY_SLOTS.map((time) => {
               const clinicSessions = sessionsAt(time, 'clinic');
               const isHour        = time.endsWith(':00');
               return (

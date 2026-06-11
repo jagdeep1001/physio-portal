@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { fromDbScheduledAt, toDbScheduledAt } from './datetime';
 import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, Profile, TherapySession } from '../types';
 
 const supabaseUrl      = import.meta.env.VITE_SUPABASE_URL      as string | undefined;
@@ -146,7 +147,7 @@ export function mapTherapySession(row: TherapySessionRow): TherapySession {
     id: row.id,
     patientId: row.patient_id,
     clinicId: row.clinic_id,
-    scheduledAt: row.scheduled_at,
+    scheduledAt: fromDbScheduledAt(row.scheduled_at),
     therapyType: row.therapy_type,
     sessionType: row.session_type ?? 'clinic',
     therapyLevel: row.therapy_level ?? 'basic',
@@ -268,7 +269,7 @@ export const toProfileRow = (profile: Omit<Profile, 'id'> & { password?: string 
 export const toTherapySessionRow = (session: Omit<TherapySession, 'id'>) => ({
   patient_id:        session.patientId,
   clinic_id:         session.clinicId || null,
-  scheduled_at:      session.scheduledAt,
+  scheduled_at:      toDbScheduledAt(session.scheduledAt),
   therapy_type:      session.therapyType,
   session_type:      session.sessionType,
   therapy_level:     session.therapyLevel,

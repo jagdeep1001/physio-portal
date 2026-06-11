@@ -1,6 +1,7 @@
 import { FileText, Printer, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { Clinic, Patient, Profile, TherapySession } from '../types';
+import { sessionDateKey } from '../lib/datetime';
 import { formatTherapyTypeDisplay } from '../lib/therapy';
 import { InvoiceDocument } from './InvoiceDocument';
 import {
@@ -145,7 +146,7 @@ export function InvoiceModal({
                 {billableAll.length === 0 && <option value="">No billable sessions</option>}
                 {billableAll.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {formatInvoiceDate(s.scheduledAt.slice(0, 10))} · {formatTherapyTypeDisplay(s.therapyType)} · {formatInvoiceCurrency(s.amountCollected)}
+                    {formatInvoiceDate(sessionDateKey(s.scheduledAt))} · {formatTherapyTypeDisplay(s.therapyType)} · {formatInvoiceCurrency(s.amountCollected)}
                   </option>
                 ))}
               </select>
