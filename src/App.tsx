@@ -33,7 +33,7 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { demoPasswords, initialData } from './data/mockData';
 import {
@@ -3244,6 +3244,10 @@ function SessionsView({
                         <span className="patient-group-avatar">{(patient?.name ?? '?').charAt(0)}</span>
                         <div className="patient-group-info">
                           <strong>{patient?.name ?? 'Unknown patient'}</strong>
+                          <span className="patient-group-clinic">
+                            <Building2 size={11} />
+                            {clinicName(allClinics, patient?.clinicId ?? sessions[0]?.clinicId)}
+                          </span>
                           {next && <small>Next: {formatDateTime(next.scheduledAt)} · {formatTherapyTypeDisplay(next.therapyType)}</small>}
                         </div>
                         <div className="patient-group-stats">
@@ -3301,7 +3305,13 @@ function SessionsView({
                                     </div>
                                     <div className="group-session-info">
                                       <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
-                                      <small className="session-slot-time"><Clock size={10} /> {session.scheduledAt.slice(11, 16)}</small>
+                                      <div className="group-session-meta">
+                                        <small className="group-session-clinic">
+                                          <Building2 size={10} /> {clinicName(allClinics, session.clinicId)}
+                                        </small>
+                                        <span className="group-session-meta-sep">·</span>
+                                        <small className="session-slot-time"><Clock size={10} /> {session.scheduledAt.slice(11, 16)}</small>
+                                      </div>
                                       {session.treatmentNotes && <p className="clinical-note">{session.treatmentNotes}</p>}
                                     </div>
                                     <div className="group-session-right">
@@ -4029,6 +4039,18 @@ function ScheduleNewPage({
   const [submitting, setSubmitting] = useState(false);
   const [successCount, setSuccessCount] = useState(0);
 
+  const finishScheduling = useCallback(() => {
+    setConfirmed(false);
+    setSuccessCount(0);
+    onBack();
+  }, [onBack]);
+
+  useEffect(() => {
+    if (!confirmed) return;
+    const timer = window.setTimeout(finishScheduling, 3500);
+    return () => clearTimeout(timer);
+  }, [confirmed, finishScheduling]);
+
   // Sync preset
   useEffect(() => {
     if (preset.patientId) setPatientId(preset.patientId);
@@ -4066,16 +4088,6 @@ function ScheduleNewPage({
     setSubmitting(false);
     setConfirmed(true);
     onClearPreset();
-
-    setTimeout(() => {
-      setTherapyType('');
-      setTherapyType2('');
-      setStartTime2('11:00');
-      setNotes('');
-      setAmountPerSession('');
-      setConfirmed(false);
-      setSuccessCount(0);
-    }, 3000);
   };
 
   const selectedPatient = data.patients.find((p) => p.id === patientId);
@@ -4097,9 +4109,30 @@ function ScheduleNewPage({
       </div>
 
       {confirmed && (
-        <div className="success-banner">
-          <Check size={18} />
-          <strong>{successCount} session{successCount > 1 ? 's' : ''} scheduled successfully!</strong>
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) finishScheduling(); }}>
+          <div className="modal-panel schedule-success-modal" style={{ maxWidth: 440 }}>
+            <div className="modal-accent modal-accent-green" />
+            <div className="modal-header">
+              <div className="modal-header-icon"><Check size={18} /></div>
+              <div>
+                <h3 className="modal-title">Sessions scheduled</h3>
+                <p className="modal-sub">
+                  {successCount} session{successCount > 1 ? 's' : ''} created
+                  {selectedPatient ? ` for ${selectedPatient.name}` : ''}
+                </p>
+              </div>
+            </div>
+            <div className="modal-body">
+              <p className="schedule-success-msg">
+                Your sessions are saved and will appear in the Sessions list. You&apos;ll be taken there shortly.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="primary-button" type="button" onClick={finishScheduling}>
+                <CalendarDays size={14} /> View sessions
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -1598,11 +1598,18 @@ textarea { min-height: 76px; resize: vertical; }
 .modal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 20px 0 16px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 20px;
+}
+.modal-header > div:not(.modal-header-icon) {
+  flex: 1;
+  min-width: 0;
+}
+.modal-header > .icon-btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .modal-header-icon {
   width: 40px;
@@ -2046,7 +2053,25 @@ textarea { min-height: 76px; resize: vertical; }
 }
 .patient-group-info { flex: 1; min-width: 0; }
 .patient-group-info strong { display: block; font-size: 0.9rem; }
-.patient-group-info small  { font-size: 0.72rem; color: var(--muted); }
+.patient-group-clinic {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--teal-dark);
+}
+.patient-group-info small  { display: block; margin-top: 3px; font-size: 0.72rem; color: var(--muted); }
+
+.group-session-clinic {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--teal-dark);
+}
 
 .patient-group-stats {
   display: flex;
@@ -2095,6 +2120,17 @@ textarea { min-height: 76px; resize: vertical; }
 .group-session-badges { display: flex; gap: 5px; align-items: center; flex-shrink: 0; }
 .group-session-info { flex: 1; min-width: 0; }
 .group-session-info strong { display: block; font-size: 0.85rem; }
+.group-session-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+}
+.group-session-meta-sep {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
 .group-session-info small  { font-size: 0.72rem; color: var(--muted); }
 
 .group-session-right {
@@ -3920,6 +3956,42 @@ textarea { min-height: 76px; resize: vertical; }
   font-size: 0.8rem;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.schedule-success-msg {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--slate);
+  line-height: 1.55;
+}
+
+/* Compact success modal after scheduling */
+.schedule-success-modal {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.schedule-success-modal .modal-accent {
+  margin: 0;
+  border-radius: 16px 16px 0 0;
+}
+
+.schedule-success-modal .modal-header {
+  padding: 20px 24px 16px;
+  margin-bottom: 0;
+}
+
+.schedule-success-modal .modal-body {
+  padding: 16px 24px 0;
+}
+
+.schedule-success-modal .modal-footer {
+  position: static;
+  bottom: auto;
+  margin-top: 0;
+  padding: 16px 24px 24px;
 }
 
 .invoice-preview-wrap {
