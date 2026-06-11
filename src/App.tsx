@@ -59,6 +59,9 @@ import {
   openStoredReport,
   uploadPatientReport,
 } from './lib/r2';
+import { InvoiceModal } from './components/InvoiceModal';
+import type { InvoiceMode } from './lib/invoice';
+import { formatTherapyTypeDisplay, splitTherapyTypes, THERAPY_GROUPS, THERAPY_SEPARATOR } from './lib/therapy';
 import type {
   AppData,
   Clinic,
@@ -934,6 +937,8 @@ export function App() {
         {page === 'sessions' && (
           <SessionsView
             data={scoped}
+            allClinics={data.clinics}
+            profiles={scoped.profiles}
             onUpdateSession={updateSession}
             onChangeStatus={changeSessionStatus}
             onDeleteSession={deleteSession}
@@ -1353,7 +1358,7 @@ function Dashboard({
                   <div key={session.id} className="compact-row">
                     <span className={`compact-type-dot ${session.sessionType}`} />
                     <div className="compact-info">
-                      <strong>{session.therapyType}</strong>
+                      <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
                       <small>{patient?.name ?? '—'} · {formatDateTime(session.scheduledAt)}</small>
                     </div>
                     <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
@@ -1551,7 +1556,7 @@ function HomeDashboard({
                     <span className="compact-type-dot home" />
                     <div className="compact-info">
                       <strong>{patient?.name ?? 'Unknown patient'}</strong>
-                      <small>{formatDateTime(session.scheduledAt)} · {session.therapyType}</small>
+                      <small>{formatDateTime(session.scheduledAt)} · {formatTherapyTypeDisplay(session.therapyType)}</small>
                     </div>
                     <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
                   </button>
@@ -1743,6 +1748,7 @@ function PatientDetailView({
   const patient = data.patients.find((p) => p.id === patientId);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showInvoice, setShowInvoice] = useState(false);
   const [draft, setDraft] = useState<PatientDraft>(() => emptyPatient(defaultClinicId));
 
   useEffect(() => {
@@ -1871,6 +1877,9 @@ function PatientDetailView({
             </div>
           </div>
           <div className="pp-hero-actions">
+            <button className="secondary-button" type="button" onClick={() => setShowInvoice(true)}>
+              <FileText size={15} /> Generate invoice
+            </button>
             <button className="primary-button" onClick={() => onScheduleSession(patient.id, 'clinic')}>
               <Stethoscope size={15} /> Schedule clinic
             </button>
@@ -2081,7 +2090,7 @@ function PatientDetailView({
                     </div>
                     <div className="pp-session-body">
                       <div className="pp-session-top">
-                        <strong>{session.therapyType}</strong>
+                        <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
                         <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
                       </div>
                       <div className="pp-session-meta">
@@ -2123,6 +2132,16 @@ function PatientDetailView({
             editing
           />
         </div>
+      )}
+
+      {showInvoice && (
+        <InvoiceModal
+          patient={patient}
+          sessions={data.therapySessions}
+          clinics={allClinics}
+          profiles={staff}
+          onClose={() => setShowInvoice(false)}
+        />
       )}
     </div>
   );
@@ -2319,7 +2338,7 @@ function HomeVisitPanel({
                   <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
                   <span className="badge badge-amber"><Home size={12} /> Home visit</span>
                   <span className={`therapy-level-badge ${session.therapyLevel}`}>{session.therapyLevel}</span>
-                  <strong>{session.therapyType}</strong>
+                  <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
                   <small>{formatDateTime(session.scheduledAt)}</small>
                 </div>
                 {therapist && <small>Therapist: {therapist.name}</small>}
@@ -3010,9 +3029,11 @@ function PatientForm({
 // ─── Sessions View (list + actions) ──────────────────────────────────────────
 
 function SessionsView({
-  data, onUpdateSession, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
+  data, allClinics, profiles, onUpdateSession, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
+  allClinics: Clinic[];
+  profiles: Profile[];
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
   onDeleteSession: (sessionId: string) => void;
@@ -3020,7 +3041,7 @@ function SessionsView({
   onRecordSession: (session: Omit<TherapySession, 'id'>) => void;
 }) {
   const [completingId, setCompletingId] = useState<string | null>(null);
-  const [completionData, setCompletionData] = useState({ treatmentNotes: '', amountCollected: '' });
+  const [completionData, setCompletionData] = useState<CompletionFormData>(emptyCompletionForm);
   const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
   const [filterStatus, setFilterStatus] = useState<'all' | SessionStatus>('all');
   const [filterLevel, setFilterLevel] = useState<'all' | TherapyLevel>('all');
@@ -3028,6 +3049,11 @@ function SessionsView({
   const [searchQuery, setSearchQuery] = useState('');
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [expandedPatients, setExpandedPatients] = useState<Set<string>>(new Set());
+  const [invoiceModal, setInvoiceModal] = useState<{
+    patientId: string;
+    mode?: InvoiceMode;
+    sessionId?: string;
+  } | null>(null);
 
   const togglePatient = (patientId: string) =>
     setExpandedPatients((prev) => {
@@ -3038,15 +3064,16 @@ function SessionsView({
 
   const submitCompletion = (e: FormEvent) => {
     e.preventDefault();
-    if (!completingId) return;
+    if (!completingId || !completionData.therapyType.trim()) return;
     onUpdateSession(completingId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
+      therapyType: completionData.therapyType.trim(),
       treatmentNotes: completionData.treatmentNotes,
       amountCollected: completionData.amountCollected ? parseFloat(completionData.amountCollected) : null,
     });
     setCompletingId(null);
-    setCompletionData({ treatmentNotes: '', amountCollected: '' });
+    setCompletionData(emptyCompletionForm());
   };
 
   const filteredSessions = data.therapySessions
@@ -3096,41 +3123,24 @@ function SessionsView({
     .filter((s) => s.status === 'scheduled' && s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
 
+  const invoicePatient = invoiceModal
+    ? data.patients.find((p) => p.id === invoiceModal.patientId)
+    : undefined;
+
   return (
     <>
       {/* Complete session modal */}
       {completingId && (
-        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setCompletingId(null); }}>
-          <form className="modal-panel" style={{ maxWidth: 420 }} onSubmit={submitCompletion}>
-            <div className="modal-accent modal-accent-green" />
-            <div className="modal-header">
-              <div className="modal-header-icon">🏁</div>
-              <div>
-                <h3 className="modal-title">Complete session</h3>
-                <p className="modal-sub">Record treatment notes and payment</p>
-              </div>
-              <button type="button" className="icon-btn" onClick={() => setCompletingId(null)}><X size={18} /></button>
-            </div>
-            <div className="modal-body">
-              <label>
-                Treatment notes <span className="required">*</span>
-                <textarea required rows={3} value={completionData.treatmentNotes}
-                  onChange={(e) => setCompletionData({ ...completionData, treatmentNotes: e.target.value })}
-                  placeholder="What was done in this session…" />
-              </label>
-              <label>
-                Amount collected (₹)
-                <input type="number" min="0" step="0.01" value={completionData.amountCollected}
-                  onChange={(e) => setCompletionData({ ...completionData, amountCollected: e.target.value })}
-                  placeholder="0" />
-              </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setCompletingId(null)}><X size={14} /> Cancel</button>
-              <button className="primary-button" type="submit"><Check size={14} /> Mark complete</button>
-            </div>
-          </form>
-        </div>
+        <CompleteSessionModal
+          title="Complete session"
+          subtitle="Record therapy, treatment notes and payment"
+          accentClass="modal-accent-green"
+          icon="🏁"
+          data={completionData}
+          onChange={(updates) => setCompletionData((prev) => ({ ...prev, ...updates }))}
+          onSubmit={submitCompletion}
+          onClose={() => { setCompletingId(null); setCompletionData(emptyCompletionForm()); }}
+        />
       )}
 
       {/* Edit session modal */}
@@ -3149,6 +3159,18 @@ function SessionsView({
           data={data}
           onSave={(session) => { onRecordSession(session); setShowRecordModal(false); }}
           onClose={() => setShowRecordModal(false)}
+        />
+      )}
+
+      {invoiceModal && invoicePatient && (
+        <InvoiceModal
+          patient={invoicePatient}
+          sessions={data.therapySessions}
+          clinics={allClinics}
+          profiles={profiles}
+          initialMode={invoiceModal.mode}
+          initialSessionId={invoiceModal.sessionId}
+          onClose={() => setInvoiceModal(null)}
         />
       )}
 
@@ -3213,28 +3235,39 @@ function SessionsView({
                 const isExpanded = expandedPatients.has(patientId);
                 return (
                   <div key={patientId} className="patient-session-group">
-                    {/* Patient header row */}
-                    <button
-                      className="patient-group-header"
-                      onClick={() => togglePatient(patientId)}
-                      type="button"
-                    >
-                      <span className="patient-group-avatar">{(patient?.name ?? '?').charAt(0)}</span>
-                      <div className="patient-group-info">
-                        <strong>{patient?.name ?? 'Unknown patient'}</strong>
-                        {next && <small>Next: {formatDateTime(next.scheduledAt)} · {next.therapyType}</small>}
-                      </div>
-                      <div className="patient-group-stats">
-                        <span className="pg-stat total"><CalendarDays size={12} />{total}</span>
-                        <span className="pg-stat scheduled"><Activity size={12} />{scheduled}</span>
-                        <span className="pg-stat completed"><Check size={12} />{completed}</span>
-                        {cancelled > 0 && <span className="pg-stat cancelled"><X size={12} />{cancelled}</span>}
-                        {revenue > 0 && <span className="pg-stat revenue"><DollarSign size={12} />{formatCurrency(revenue)}</span>}
-                      </div>
-                      <span className={`group-chevron ${isExpanded ? 'open' : ''}`}>
-                        <ChevronRight size={16} />
-                      </span>
-                    </button>
+                    <div className="patient-group-header">
+                      <button
+                        className="patient-group-header-main"
+                        onClick={() => togglePatient(patientId)}
+                        type="button"
+                      >
+                        <span className="patient-group-avatar">{(patient?.name ?? '?').charAt(0)}</span>
+                        <div className="patient-group-info">
+                          <strong>{patient?.name ?? 'Unknown patient'}</strong>
+                          {next && <small>Next: {formatDateTime(next.scheduledAt)} · {formatTherapyTypeDisplay(next.therapyType)}</small>}
+                        </div>
+                        <div className="patient-group-stats">
+                          <span className="pg-stat total"><CalendarDays size={12} />{total}</span>
+                          <span className="pg-stat scheduled"><Activity size={12} />{scheduled}</span>
+                          <span className="pg-stat completed"><Check size={12} />{completed}</span>
+                          {cancelled > 0 && <span className="pg-stat cancelled"><X size={12} />{cancelled}</span>}
+                          {revenue > 0 && <span className="pg-stat revenue"><DollarSign size={12} />{formatCurrency(revenue)}</span>}
+                        </div>
+                        <span className={`group-chevron ${isExpanded ? 'open' : ''}`}>
+                          <ChevronRight size={16} />
+                        </span>
+                      </button>
+                      {patient && revenue > 0 && (
+                        <button
+                          type="button"
+                          className="secondary-button icon-only patient-group-invoice-btn"
+                          title="Generate invoice"
+                          onClick={() => setInvoiceModal({ patientId, mode: 'period' })}
+                        >
+                          <FileText size={14} />
+                        </button>
+                      )}
+                    </div>
 
                     {/* Expanded session rows — grouped by date */}
                     {isExpanded && (
@@ -3267,7 +3300,7 @@ function SessionsView({
                                       <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
                                     </div>
                                     <div className="group-session-info">
-                                      <strong>{session.therapyType}</strong>
+                                      <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
                                       <small className="session-slot-time"><Clock size={10} /> {session.scheduledAt.slice(11, 16)}</small>
                                       {session.treatmentNotes && <p className="clinical-note">{session.treatmentNotes}</p>}
                                     </div>
@@ -3283,7 +3316,14 @@ function SessionsView({
                                       {session.status === 'scheduled' && (
                                         <>
                                           <button className="primary-button icon-only" title="Mark complete"
-                                            onClick={() => { setCompletingId(session.id); setCompletionData({ treatmentNotes: session.treatmentNotes ?? '', amountCollected: '' }); }}>
+                                            onClick={() => {
+                                              setCompletingId(session.id);
+                                              setCompletionData({
+                                                treatmentNotes: session.treatmentNotes ?? '',
+                                                amountCollected: session.amountCollected?.toString() ?? '',
+                                                therapyType: session.therapyType ?? '',
+                                              });
+                                            }}>
                                             <Check size={13} />
                                           </button>
                                           <button className="secondary-button icon-only" title="Edit session" onClick={() => setEditingSession(session)}>
@@ -3293,6 +3333,19 @@ function SessionsView({
                                           <button className="ghost-button icon-only" title="Cancel" onClick={() => onChangeStatus(session.id, 'cancelled')}><X size={13} /></button>
                                           <button className="danger-button icon-only" title="Delete" onClick={() => onDeleteSession(session.id)}><Trash2 size={13} /></button>
                                         </>
+                                      )}
+                                      {session.status === 'completed' && session.amountCollected !== null && patient && (
+                                        <button
+                                          className="secondary-button icon-only"
+                                          title="Generate invoice"
+                                          onClick={() => setInvoiceModal({
+                                            patientId: patient.id,
+                                            mode: 'single',
+                                            sessionId: session.id,
+                                          })}
+                                        >
+                                          <Receipt size={13} />
+                                        </button>
                                       )}
                                       {session.status !== 'scheduled' && (
                                         <button className="danger-button icon-only" title="Delete" onClick={() => onDeleteSession(session.id)}><Trash2 size={13} /></button>
@@ -3345,7 +3398,7 @@ function HomeVisitsView({
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
   const [completingId, setCompletingId] = useState<string | null>(null);
-  const [completionData, setCompletionData] = useState({ treatmentNotes: '', amountCollected: '' });
+  const [completionData, setCompletionData] = useState<CompletionFormData>(emptyCompletionForm);
 
   useEffect(() => {
     if (preset.patientId) {
@@ -3382,15 +3435,16 @@ function HomeVisitsView({
 
   const submitCompletion = (e: FormEvent) => {
     e.preventDefault();
-    if (!completingId) return;
+    if (!completingId || !completionData.therapyType.trim()) return;
     onUpdateSession(completingId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
+      therapyType: completionData.therapyType.trim(),
       treatmentNotes: completionData.treatmentNotes,
       amountCollected: completionData.amountCollected ? parseFloat(completionData.amountCollected) : null,
     });
     setCompletingId(null);
-    setCompletionData({ treatmentNotes: '', amountCollected: '' });
+    setCompletionData(emptyCompletionForm());
   };
 
   const groups = Array.from(
@@ -3426,37 +3480,16 @@ function HomeVisitsView({
   return (
     <div className="content-stack">
       {completingId && (
-        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setCompletingId(null); }}>
-          <form className="modal-panel" style={{ maxWidth: 420 }} onSubmit={submitCompletion}>
-            <div className="modal-accent modal-accent-teal" />
-            <div className="modal-header">
-              <div className="modal-header-icon"><Home size={18} /></div>
-              <div>
-                <h3 className="modal-title">Complete home visit</h3>
-                <p className="modal-sub">Record treatment notes and amount collected</p>
-              </div>
-              <button type="button" className="icon-btn" onClick={() => setCompletingId(null)}><X size={18} /></button>
-            </div>
-            <div className="modal-body">
-              <label>
-                Treatment notes <span className="required">*</span>
-                <textarea required rows={3} value={completionData.treatmentNotes}
-                  onChange={(e) => setCompletionData({ ...completionData, treatmentNotes: e.target.value })}
-                  placeholder="What was done in this visit…" />
-              </label>
-              <label>
-                Amount collected (₹)
-                <input type="number" min="0" step="0.01" value={completionData.amountCollected}
-                  onChange={(e) => setCompletionData({ ...completionData, amountCollected: e.target.value })}
-                  placeholder="0" />
-              </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setCompletingId(null)}><X size={14} /> Cancel</button>
-              <button className="primary-button" type="submit"><Check size={14} /> Mark complete</button>
-            </div>
-          </form>
-        </div>
+        <CompleteSessionModal
+          title="Complete home visit"
+          subtitle="Record therapy, treatment notes and amount collected"
+          accentClass="modal-accent-teal"
+          icon={<Home size={18} />}
+          data={completionData}
+          onChange={(updates) => setCompletionData((prev) => ({ ...prev, ...updates }))}
+          onSubmit={submitCompletion}
+          onClose={() => { setCompletingId(null); setCompletionData(emptyCompletionForm()); }}
+        />
       )}
 
       <section className="panel home-visit-scheduler">
@@ -3604,7 +3637,7 @@ function HomeVisitsView({
                           <div className="hv-session-left">
                             <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
                             <div className="hv-session-info">
-                              <span className="hv-session-type">{session.therapyType}</span>
+                              <span className="hv-session-type">{formatTherapyTypeDisplay(session.therapyType)}</span>
                               <span className="hv-session-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</span>
                               {session.notes && <span className="hv-session-note">{session.notes}</span>}
                             </div>
@@ -3620,7 +3653,14 @@ function HomeVisitsView({
                               {session.status === 'scheduled' && (
                                 <>
                                   <button className="primary-button icon-only" title="Mark complete"
-                                    onClick={() => { setCompletingId(session.id); setCompletionData({ treatmentNotes: session.treatmentNotes ?? '', amountCollected: session.amountCollected?.toString() ?? '' }); }}>
+                                    onClick={() => {
+                                      setCompletingId(session.id);
+                                      setCompletionData({
+                                        treatmentNotes: session.treatmentNotes ?? '',
+                                        amountCollected: session.amountCollected?.toString() ?? '',
+                                        therapyType: session.therapyType ?? '',
+                                      });
+                                    }}>
                                     <Check size={12} />
                                   </button>
                                   <button className="ghost-button icon-only" title="No show"
@@ -4311,7 +4351,7 @@ function ScheduleNewPage({
                   Clinic session
                 </span>
                 {selectedPatient && <span className="badge badge-slate">{selectedPatient.name}</span>}
-                {therapyType && <span className="badge badge-blue">{therapyType}</span>}
+                {therapyType && <span className="badge badge-blue">{formatTherapyTypeDisplay(therapyType)}</span>}
                 {amountPerSession && (
                   <span className="badge badge-green">₹{amountPerSession} / session</span>
                 )}
@@ -4346,8 +4386,10 @@ function ScheduleNewPage({
                           sessionNum++;
                           const time = slot.slice(11, 16);
                           const label = dualTherapy
-                            ? si === 0 ? `${therapyType || 'Therapy 1'} · ${therapyLevel}` : `${therapyType2 || 'Therapy 2'} · ${therapyLevel2}`
-                            : (therapyType || 'Session');
+                            ? si === 0
+                              ? `${formatTherapyTypeDisplay(therapyType) || 'Therapy 1'} · ${therapyLevel}`
+                              : `${formatTherapyTypeDisplay(therapyType2) || 'Therapy 2'} · ${therapyLevel2}`
+                            : (formatTherapyTypeDisplay(therapyType) || 'Session');
                           return (
                             <div key={slot + si} className="preview-item">
                               <span className="preview-num">{sessionNum}</span>
@@ -4530,7 +4572,7 @@ function CalendarView({
             <div className="cal-popover-title-row">
               <span className="cal-popover-icon">{isHome ? <Home size={16} /> : <Stethoscope size={16} />}</span>
               <div>
-                <h3 className="cal-popover-title">{popover.therapyType}</h3>
+                <h3 className="cal-popover-title">{formatTherapyTypeDisplay(popover.therapyType)}</h3>
                 <p className="cal-popover-sub">{dateDisp} · {time}</p>
               </div>
             </div>
@@ -4825,11 +4867,11 @@ function CalendarView({
                             <button key={s.id}
                               className={`cal-session-chip ${s.sessionType === 'home' ? 'home' : 'clinic'} level-${s.therapyLevel ?? 'basic'} status-${s.status}`}
                               onClick={() => setPopover(s)}
-                              title={`${s.therapyType} · ${s.scheduledAt.slice(11, 16)} [${s.therapyLevel ?? 'basic'}]`}
+                              title={`${formatTherapyTypeDisplay(s.therapyType)} · ${s.scheduledAt.slice(11, 16)} [${s.therapyLevel ?? 'basic'}]`}
                             >
                               {s.sessionType === 'home' ? <Home size={9} /> : <Stethoscope size={9} />}
                               <span className="chip-time">{s.scheduledAt.slice(11, 16)}</span>
-                              <span className="chip-label">{s.therapyType.slice(0, 12)}</span>
+                              <span className="chip-label">{formatTherapyTypeDisplay(s.therapyType).slice(0, 16)}</span>
                             </button>
                           ))}
                           {sessions.length > 3 && (
@@ -4903,7 +4945,7 @@ function CalendarView({
                               <span className={`therapy-level-badge sm ${clinicSession.therapyLevel ?? 'basic'}`}>{clinicSession.therapyLevel ?? 'basic'}</span>
                             </div>
                             <div className="slot-booked-bottom">
-                              <span className="slot-therapy">{clinicSession.therapyType}</span>
+                              <span className="slot-therapy">{formatTherapyTypeDisplay(clinicSession.therapyType)}</span>
                               <span className={`status sm ${clinicSession.status}`}>{statusLabel(clinicSession.status)}</span>
                             </div>
                           </button>
@@ -5481,7 +5523,7 @@ function SessionRow({
             {session.therapyLevel ?? 'basic'}
           </span>
         </div>
-        <strong>{session.therapyType}</strong>
+        <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
         <small>{patient?.name ?? 'Unknown patient'} · {clinicName(data.clinics, session.clinicId)}</small>
       </div>
       <div className="session-meta">
@@ -5512,29 +5554,87 @@ function isHomeOnlyPatient(p: { clinicId: string | null; homeVisitDetails?: Home
 
 // ─── Therapy type multi-select ────────────────────────────────────────────────
 
-const THERAPY_SEPARATOR = '|';
+type CompletionFormData = {
+  treatmentNotes: string;
+  amountCollected: string;
+  therapyType: string;
+};
 
-const THERAPY_GROUPS = [
-  {
-    label: 'Basic',
-    options: ['US', 'TENS', 'IFT', 'Hot pack', 'WAX THERAPY', 'TRACTION (CERVICAL/LUMBAR)'],
-  },
-  {
-    label: 'Advanced',
-    options: [
-      'Cupping Static/Dynamic',
-      'Wet Cupping/Hijama',
-      'Dry Needling',
-      'IASTM',
-      'Taping',
-      'Fire Cupping',
-      'Electro Needling',
-    ],
-  },
-];
+const emptyCompletionForm = (): CompletionFormData => ({
+  treatmentNotes: '',
+  amountCollected: '',
+  therapyType: '',
+});
 
-function splitTherapyTypes(value: string): string[] {
-  return value ? value.split(THERAPY_SEPARATOR).map((s) => s.trim()).filter(Boolean) : [];
+function CompleteSessionModal({
+  title,
+  subtitle,
+  accentClass,
+  icon,
+  data,
+  onChange,
+  onSubmit,
+  onClose,
+}: {
+  title: string;
+  subtitle: string;
+  accentClass: string;
+  icon: ReactNode;
+  data: CompletionFormData;
+  onChange: (updates: Partial<CompletionFormData>) => void;
+  onSubmit: (e: FormEvent) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <form className="modal-panel" style={{ maxWidth: 460 }} onSubmit={onSubmit}>
+        <div className={`modal-accent ${accentClass}`} />
+        <div className="modal-header">
+          <div className="modal-header-icon">{icon}</div>
+          <div>
+            <h3 className="modal-title">{title}</h3>
+            <p className="modal-sub">{subtitle}</p>
+          </div>
+          <button type="button" className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <label>
+            Therapy performed
+            <TherapyTypeSelect
+              required
+              value={data.therapyType}
+              onChange={(therapyType) => onChange({ therapyType })}
+            />
+          </label>
+          <label>
+            Treatment notes <span className="required">*</span>
+            <textarea
+              required
+              rows={3}
+              value={data.treatmentNotes}
+              onChange={(e) => onChange({ treatmentNotes: e.target.value })}
+              placeholder="What was done in this session…"
+            />
+          </label>
+          <label>
+            Amount collected (₹)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={data.amountCollected}
+              onChange={(e) => onChange({ amountCollected: e.target.value })}
+              placeholder="0"
+            />
+          </label>
+        </div>
+        <div className="modal-footer">
+          <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
+          <button className="primary-button" type="submit"><Check size={14} /> Mark complete</button>
+        </div>
+      </form>
+    </div>
+  );
 }
 
 function TherapyTypeSelect({

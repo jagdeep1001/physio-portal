@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhysioCare Portal — Technical Documentation</title>
+  <link rel="stylesheet" href="styles/doc-shared.css" />
+</head>
+<body>
+
+<!-- COVER -->
+<section class="cover">
+  <div class="cover-badge">PhysioCare Clinic Portal · v0.1</div>
+  <h1>Technical Documentation</h1>
+  <p class="subtitle">Architecture, data model, integrations, deployment pipeline, and implementation reference for developers and IT teams.</p>
+  <div class="cover-icon-grid">
+    <div class="cover-icon">⚛️</div>
+    <div class="cover-icon">🗄️</div>
+    <div class="cover-icon">☁️</div>
+    <div class="cover-icon">🚀</div>
+  </div>
+  <dl class="cover-meta">
+    <div><dt>Document type</dt><dd>Technical Reference</dd></div>
+    <div><dt>Audience</dt><dd>Developers, DevOps, IT administrators</dd></div>
+    <div><dt>Stack</dt><dd>React · Vite · Supabase · Cloudflare R2</dd></div>
+    <div><dt>Version</dt><dd>June 2026</dd></div>
+  </dl>
+</section>
+
+<!-- TOC -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical Documentation</span></div>
+  <h2>Table of Contents</h2>
+  <ol class="toc">
+    <li><span class="num">1</span><span class="title">System Architecture</span></li>
+    <li><span class="num">2</span><span class="title">Technology Stack</span></li>
+    <li><span class="num">3</span><span class="title">Project Structure</span></li>
+    <li><span class="num">4</span><span class="title">Data Model</span></li>
+    <li><span class="num">5</span><span class="title">Application Routing &amp; State</span></li>
+    <li><span class="num">6</span><span class="title">Persistence Layer</span></li>
+    <li><span class="num">7</span><span class="title">Cloudflare R2 Worker API</span></li>
+    <li><span class="num">8</span><span class="title">Authentication &amp; Authorization</span></li>
+    <li><span class="num">9</span><span class="title">Deployment</span></li>
+    <li><span class="num">10</span><span class="title">Environment Variables</span></li>
+    <li><span class="num">11</span><span class="title">Database Schema</span></li>
+    <li><span class="num">12</span><span class="title">Key Implementation Patterns</span></li>
+  </ol>
+</section>
+
+<!-- ARCHITECTURE -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §1</span></div>
+  <h2>1. System Architecture</h2>
+  <p class="lead">PhysioCare is a client-side Single Page Application (SPA) with no dedicated backend server. Business logic runs in the browser; data persists to Supabase PostgreSQL or browser localStorage; files store in Cloudflare R2 via an edge Worker.</p>
+
+  <div class="diagram-wrap avoid-break">
+    <svg viewBox="0 0 640 340" width="640" xmlns="http://www.w3.org/2000/svg">
+      <rect x="170" y="10" width="300" height="70" rx="12" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="2"/>
+      <text x="320" y="38" text-anchor="middle" font-size="13" font-weight="800" fill="#0a7a6d">React SPA (Vite + TypeScript)</text>
+      <text x="320" y="58" text-anchor="middle" font-size="9" fill="#475569">App.tsx · state-based routing · ~6,200 LOC</text>
+      <line x1="220" y1="80" x2="120" y2="130" stroke="#475569" stroke-width="1.5"/>
+      <line x1="320" y1="80" x2="320" y2="130" stroke="#475569" stroke-width="1.5"/>
+      <line x1="420" y1="80" x2="520" y2="130" stroke="#475569" stroke-width="1.5"/>
+      <rect x="40" y="130" width="160" height="80" rx="10" fill="#f1f5f4" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="120" y="158" text-anchor="middle" font-size="10" font-weight="700" fill="#0f1e24">localStorage</text>
+      <text x="120" y="176" text-anchor="middle" font-size="8" fill="#475569">Demo / offline mode</text>
+      <text x="120" y="192" text-anchor="middle" font-size="8" fill="#475569">physio-care-demo-data</text>
+      <rect x="240" y="130" width="160" height="80" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="320" y="158" text-anchor="middle" font-size="10" font-weight="700" fill="#1d4ed8">Supabase</text>
+      <text x="320" y="176" text-anchor="middle" font-size="8" fill="#475569">PostgreSQL + REST API</text>
+      <text x="320" y="192" text-anchor="middle" font-size="8" fill="#475569">6 tables + JSONB fields</text>
+      <rect x="440" y="130" width="160" height="80" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="520" y="158" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">Cloudflare R2</text>
+      <text x="520" y="176" text-anchor="middle" font-size="8" fill="#475569">Object storage</text>
+      <text x="520" y="192" text-anchor="middle" font-size="8" fill="#475569">via Worker API</text>
+      <rect x="440" y="240" width="160" height="55" rx="8" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.5"/>
+      <text x="520" y="262" text-anchor="middle" font-size="9" font-weight="700" fill="#92400e">R2 Worker</text>
+      <text x="520" y="278" text-anchor="middle" font-size="8" fill="#475569">physio-r2-reports</text>
+      <line x1="520" y1="210" x2="520" y2="240" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4"/>
+      <line x1="400" y1="170" x2="440" y2="265" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3"/>
+      <rect x="170" y="290" width="300" height="40" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="320" y="315" text-anchor="middle" font-size="10" font-weight="700" fill="#5b21b6">GitHub Pages (static hosting via Actions CI/CD)</text>
+    </svg>
+    <p class="diagram-caption">Figure 1 — High-level system architecture</p>
+  </div>
+
+  <h3>Design Principles</h3>
+  <ul>
+    <li><strong>No backend server:</strong> Frontend calls Supabase and R2 Worker directly using public keys/tokens</li>
+    <li><strong>Dual persistence:</strong> Automatic fallback to localStorage when Supabase env vars are absent</li>
+    <li><strong>Single-file UI:</strong> All views live in <code>src/App.tsx</code> with internal page state (no React Router)</li>
+    <li><strong>Build-time config:</strong> All <code>VITE_*</code> variables embedded at compile time by Vite</li>
+  </ul>
+</section>
+
+<!-- STACK -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §2–3</span></div>
+  <h2>2. Technology Stack</h2>
+  <table>
+    <thead><tr><th>Layer</th><th>Technology</th><th>Version</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>UI Framework</td><td>React</td><td>18.3</td><td>Component rendering</td></tr>
+      <tr><td>Language</td><td>TypeScript</td><td>5.6</td><td>Type safety across app</td></tr>
+      <tr><td>Build tool</td><td>Vite</td><td>5.4</td><td>Dev server, production bundling</td></tr>
+      <tr><td>Icons</td><td>lucide-react</td><td>0.468</td><td>Consistent iconography</td></tr>
+      <tr><td>Database</td><td>Supabase (PostgreSQL)</td><td>JS v2.45</td><td>Remote persistence</td></tr>
+      <tr><td>File storage</td><td>Cloudflare R2</td><td>—</td><td>Patient report files</td></tr>
+      <tr><td>Edge compute</td><td>Cloudflare Workers</td><td>Wrangler</td><td>R2 upload/download API</td></tr>
+      <tr><td>Hosting</td><td>GitHub Pages</td><td>Actions v4</td><td>Static site deployment</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Project Structure</h2>
+  <pre style="background:#f1f5f4;padding:14px;border-radius:8px;font-size:8.5pt;line-height:1.6;overflow-x:auto;font-family:JetBrains Mono,monospace;color:#0f1e24">
+physio-clinic-portal/
+├── src/
+│   ├── App.tsx              # Main app (~6,200 lines): routing, views, handlers
+│   ├── types.ts             # TypeScript interfaces & enums
+│   ├── styles.css           # Global CSS design system
+│   ├── main.tsx             # React entry point
+│   ├── lib/
+│   │   ├── supabase.ts      # DB client, mappers, CRUD helpers
+│   │   └── r2.ts            # R2 upload/download client
+│   └── data/
+│       └── mockData.ts      # Seed data for demo mode
+├── workers/r2-reports/
+│   ├── src/index.ts         # Cloudflare Worker (upload/download/delete)
+│   └── wrangler.toml        # Worker config, R2 binding, CORS origins
+├── supabase_migration.sql   # Production DB schema + RLS + seed admin
+├── .github/workflows/
+│   └── deploy.yml           # GitHub Pages CI/CD
+├── docs/                    # Business & technical documentation (this)
+└── vite.config.ts           # Base path for GitHub Pages
+  </pre>
+</section>
+
+<!-- DATA MODEL -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §4</span></div>
+  <h2>4. Data Model</h2>
+  <p>Central application state shape: <code>AppData</code> containing six entity collections.</p>
+
+  <div class="diagram-wrap avoid-break">
+    <svg viewBox="0 0 620 380" width="620" xmlns="http://www.w3.org/2000/svg">
+      <text x="310" y="22" text-anchor="middle" font-size="12" font-weight="800" fill="#0f1e24">Entity Relationship Overview</text>
+      <!-- Clinic -->
+      <rect x="240" y="40" width="140" height="44" rx="8" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="2"/>
+      <text x="310" y="67" text-anchor="middle" font-size="10" font-weight="700" fill="#0a7a6d">Clinic</text>
+      <!-- Profile -->
+      <rect x="30" y="120" width="130" height="44" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="95" y="147" text-anchor="middle" font-size="10" font-weight="700" fill="#5b21b6">Profile (Staff)</text>
+      <!-- Patient -->
+      <rect x="240" y="120" width="140" height="44" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="310" y="147" text-anchor="middle" font-size="10" font-weight="700" fill="#1d4ed8">Patient</text>
+      <!-- TherapySession -->
+      <rect x="240" y="210" width="140" height="44" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="310" y="237" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">TherapySession</text>
+      <!-- Expense -->
+      <rect x="440" y="120" width="150" height="44" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+      <text x="515" y="147" text-anchor="middle" font-size="10" font-weight="700" fill="#9d174d">ClinicExpense</text>
+      <!-- Equipment -->
+      <rect x="440" y="210" width="150" height="44" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+      <text x="515" y="237" text-anchor="middle" font-size="10" font-weight="700" fill="#9d174d">Equipment</text>
+      <!-- PatientReport (embedded) -->
+      <rect x="30" y="210" width="130" height="44" rx="8" fill="#f1f5f4" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="95" y="230" text-anchor="middle" font-size="9" font-weight="700" fill="#475569">PatientReport</text>
+      <text x="95" y="246" text-anchor="middle" font-size="7" fill="#94a3b8">JSONB in Patient</text>
+      <!-- HomeVisitDetails (embedded) -->
+      <rect x="30" y="290" width="130" height="44" rx="8" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.5"/>
+      <text x="95" y="310" text-anchor="middle" font-size="9" font-weight="700" fill="#92400e">HomeVisitDetails</text>
+      <text x="95" y="326" text-anchor="middle" font-size="7" fill="#94a3b8">JSONB in Patient</text>
+      <!-- Lines -->
+      <line x1="95" y1="164" x2="260" y2="130" stroke="#94a3b8" stroke-width="1"/>
+      <line x1="310" y1="84" x2="310" y2="120" stroke="#0e9f8e" stroke-width="1.5"/>
+      <line x1="310" y1="164" x2="310" y2="210" stroke="#3b82f6" stroke-width="1.5"/>
+      <line x1="380" y1="142" x2="440" y2="142" stroke="#94a3b8" stroke-width="1"/>
+      <line x1="380" y1="232" x2="440" y2="232" stroke="#94a3b8" stroke-width="1"/>
+      <line x1="260" y1="142" x2="160" y2="210" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3"/>
+      <line x1="260" y1="150" x2="160" y2="290" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3"/>
+      <text x="200" y="108" font-size="7" fill="#94a3b8">clinic_id</text>
+      <text x="330" y="200" font-size="7" fill="#94a3b8">patient_id</text>
+    </svg>
+    <p class="diagram-caption">Figure 2 — Core entities and relationships</p>
+  </div>
+
+  <h3>Key Types (src/types.ts)</h3>
+  <table>
+    <thead><tr><th>Entity</th><th>Notable Fields</th></tr></thead>
+    <tbody>
+      <tr><td><code>Patient</code></td><td><code>clinicId</code> (nullable), <code>homeVisitDetails?</code>, <code>reports[]</code>, clinical text fields</td></tr>
+      <tr><td><code>TherapySession</code></td><td><code>sessionType</code> clinic|home, <code>therapyLevel</code>, <code>amountCollected</code>, <code>status</code></td></tr>
+      <tr><td><code>Profile</code></td><td><code>role</code> admin|staff, <code>status</code> pending|active|inactive, <code>clinicId</code></td></tr>
+      <tr><td><code>ClinicExpense</code></td><td><code>category</code>, <code>recurrence</code>, <code>amount</code>, <code>date</code></td></tr>
+      <tr><td><code>Equipment</code></td><td><code>category</code>, <code>condition</code>, <code>purchaseCost</code></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ROUTING & PERSISTENCE -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §5–6</span></div>
+  <h2>5. Application Routing &amp; State</h2>
+  <p>Navigation uses a <code>Page</code> union type and <code>useState&lt;Page&gt;</code> — no URL router. Sub-views use additional state:</p>
+  <table>
+    <thead><tr><th>Page key</th><th>View</th><th>Access</th></tr></thead>
+    <tbody>
+      <tr><td><code>dashboard</code></td><td>Clinic Dashboard</td><td>All users</td></tr>
+      <tr><td><code>homeDashboard</code></td><td>Home Visit Dashboard</td><td>All users</td></tr>
+      <tr><td><code>patients</code> / <code>patientEntry</code> / <code>patientDetail</code></td><td>Patient list, add, profile</td><td>All users</td></tr>
+      <tr><td><code>sessions</code> / <code>scheduleNew</code></td><td>Session list, bulk scheduler</td><td>All users</td></tr>
+      <tr><td><code>homeVisits</code></td><td>Home visit management</td><td>All users</td></tr>
+      <tr><td><code>calendar</code></td><td>Clinic calendar</td><td>All users</td></tr>
+      <tr><td><code>clinics</code> / <code>staff</code> / <code>expenses</code></td><td>Admin modules</td><td>Admin only</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Data Scoping</h3>
+  <pre style="background:#f1f5f4;padding:12px;border-radius:8px;font-size:8.5pt;font-family:JetBrains Mono,monospace">
+Admin  → visibleClinicIds = all clinic IDs
+Staff  → visibleClinicIds = [currentUser.clinicId]
+Patients/sessions with clinicId === null (home-only) → visible to all scoped users
+  </pre>
+
+  <h2>6. Persistence Layer</h2>
+  <h3>Supabase Mode (production)</h3>
+  <ul>
+    <li>Triggered when <code>VITE_SUPABASE_URL</code> + <code>VITE_SUPABASE_ANON_KEY</code> are set</li>
+    <li><code>loadRemoteData()</code> fetches all 6 tables in parallel on mount</li>
+    <li>Every mutation calls Supabase REST API then <code>refreshRemoteData()</code></li>
+    <li>Row mappers convert snake_case DB columns ↔ camelCase TypeScript</li>
+    <li>Expense/equipment mutations verify row count (prevent silent 0-row updates)</li>
+  </ul>
+
+  <h3>Demo Mode (localStorage)</h3>
+  <ul>
+    <li>Key: <code>physio-care-demo-data</code></li>
+    <li>Seed from <code>mockData.ts</code> on first load</li>
+    <li>Auth via <code>demoPasswords</code> map (no network)</li>
+  </ul>
+
+  <div class="callout warning">
+    <strong>Revenue business rule (implemented in UI)</strong>
+    <p>Actual revenue = completed sessions with amountCollected. Estimated = scheduled sessions with pre-set amountCollected. See <code>formatCurrency()</code> and dashboard aggregation logic in App.tsx.</p>
+  </div>
+</section>
+
+<!-- R2 WORKER -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §7</span></div>
+  <h2>7. Cloudflare R2 Worker API</h2>
+  <p>Worker name: <code>physio-r2-reports</code> · Bucket: <code>physio-reports</code></p>
+
+  <table>
+    <thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>/upload</code></td><td>POST</td><td>Multipart: patientId, reportId, file → stores at <code>patients/{id}/reports/{reportId}/{filename}</code></td></tr>
+      <tr><td><code>/download?key=...</code></td><td>GET</td><td>Streams file with correct Content-Type</td></tr>
+      <tr><td><code>/patient-reports?patientId=...</code></td><td>DELETE</td><td>Deletes all report objects for a patient</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Security</h3>
+  <ul>
+    <li>All endpoints require <code>Authorization: Bearer &lt;R2_API_TOKEN&gt;</code></li>
+    <li>CORS restricted to <code>ALLOWED_ORIGINS</code> in wrangler.toml (origin normalized, no path)</li>
+    <li>Upload: 10 MB max, MIME type whitelist, filename sanitization</li>
+    <li>Path traversal blocked on key and patientId parameters</li>
+  </ul>
+
+  <h3>Frontend Integration (src/lib/r2.ts)</h3>
+  <ul>
+    <li><code>isR2Configured</code> = both <code>VITE_R2_API_URL</code> and <code>VITE_R2_API_TOKEN</code> present at build time</li>
+    <li>Stored keys prefixed with <code>patients/</code> → detected by <code>isStoredReportKey()</code></li>
+    <li>Download opens blob URL in new tab (avoids exposing token in URL for direct links)</li>
+  </ul>
+</section>
+
+<!-- AUTH & DEPLOY -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §8–9</span></div>
+  <h2>8. Authentication &amp; Authorization</h2>
+
+  <table>
+    <thead><tr><th>Aspect</th><th>Implementation</th></tr></thead>
+    <tbody>
+      <tr><td>Auth mechanism</td><td>Custom profile login (NOT Supabase Auth JWT). Queries <code>profiles</code> table by email + password.</td></tr>
+      <tr><td>Session persistence</td><td><code>localStorage</code> key <code>physio_session_user_id</code></td></tr>
+      <tr><td>Inactivity timeout</td><td>30 minutes — auto logout on mouse/keyboard/scroll idle</td></tr>
+      <tr><td>Role enforcement</td><td>Frontend: adminOnly nav items, clinic-scoped data filter. DB: permissive RLS in migration SQL.</td></tr>
+      <tr><td>Staff signup</td><td>Creates profile with <code>status: pending</code>; admin sets <code>active</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <strong>Security note</strong>
+    <p>Passwords are stored as plain text in the profiles table (documented in migration SQL). Production deployments should migrate to hashed passwords and stricter RLS policies aligned with the frontend role model.</p>
+  </div>
+
+  <h2>9. Deployment</h2>
+
+  <div class="diagram-wrap avoid-break">
+    <svg viewBox="0 0 600 200" width="600" xmlns="http://www.w3.org/2000/svg">
+      <text x="300" y="20" text-anchor="middle" font-size="11" font-weight="800" fill="#0f1e24">CI/CD Pipeline (GitHub Actions)</text>
+      <rect x="20" y="40" width="90" height="40" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="65" y="65" text-anchor="middle" font-size="8" font-weight="700" fill="#5b21b6">git push</text>
+      <text x="65" y="78" text-anchor="middle" font-size="7" fill="#475569">main branch</text>
+      <path d="M110 60 L140 60" stroke="#0e9f8e" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="145" y="40" width="90" height="40" rx="6" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="1.5"/>
+      <text x="190" y="65" text-anchor="middle" font-size="8" font-weight="700" fill="#0a7a6d">npm ci</text>
+      <path d="M235 60 L265 60" stroke="#0e9f8e" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="270" y="40" width="90" height="40" rx="6" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="1.5"/>
+      <text x="315" y="62" text-anchor="middle" font-size="8" font-weight="700" fill="#0a7a6d">npm run build</text>
+      <text x="315" y="75" text-anchor="middle" font-size="7" fill="#475569">+ VITE_* secrets</text>
+      <path d="M360 60 L390 60" stroke="#0e9f8e" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="395" y="40" width="90" height="40" rx="6" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="440" y="65" text-anchor="middle" font-size="8" font-weight="700" fill="#1d4ed8">upload artifact</text>
+      <path d="M485 60 L515 60" stroke="#0e9f8e" stroke-width="1.5" marker-end="url(#a3)"/>
+      <rect x="520" y="40" width="60" height="40" rx="6" fill="#d1fae5" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="550" y="65" text-anchor="middle" font-size="8" font-weight="700" fill="#065f46">Pages</text>
+      <rect x="145" y="110" width="310" height="70" rx="8" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.5"/>
+      <text x="300" y="135" text-anchor="middle" font-size="9" font-weight="700" fill="#92400e">Separate: R2 Worker deploy</text>
+      <text x="300" y="152" text-anchor="middle" font-size="8" fill="#475569">cd workers/r2-reports && npm run deploy</text>
+      <text x="300" y="168" text-anchor="middle" font-size="8" fill="#475569">wrangler secret put R2_API_TOKEN</text>
+      <defs><marker id="a3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#0e9f8e"/></marker></defs>
+    </svg>
+    <p class="diagram-caption">Figure 3 — Frontend and Worker deployment paths</p>
+  </div>
+</section>
+
+<!-- ENV VARS & SCHEMA -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §10–11</span></div>
+  <h2>10. Environment Variables</h2>
+  <p>All frontend variables must be prefixed with <code>VITE_</code> and set at <strong>build time</strong>.</p>
+
+  <table>
+    <thead><tr><th>Variable</th><th>Required</th><th>Where set</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>VITE_SUPABASE_URL</code></td><td>Production</td><td>GitHub Secret / .env.local</td><td>Supabase project URL</td></tr>
+      <tr><td><code>VITE_SUPABASE_ANON_KEY</code></td><td>Production</td><td>GitHub Secret / .env.local</td><td>Supabase anonymous API key</td></tr>
+      <tr><td><code>VITE_R2_API_URL</code></td><td>For file uploads</td><td>GitHub Secret / .env.local</td><td>Deployed Worker URL</td></tr>
+      <tr><td><code>VITE_R2_API_TOKEN</code></td><td>For file uploads</td><td>GitHub Secret / .env.local</td><td>Must match Worker secret</td></tr>
+      <tr><td><code>VITE_BASE_PATH</code></td><td>GitHub Pages</td><td>Auto in deploy.yml</td><td><code>/{repo-name}/</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Worker secrets (Wrangler)</h3>
+  <table>
+    <thead><tr><th>Secret / Var</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>R2_API_TOKEN</code></td><td>Bearer token for API auth (wrangler secret)</td></tr>
+      <tr><td><code>ALLOWED_ORIGINS</code></td><td>CORS origins in wrangler.toml (host only for GitHub Pages)</td></tr>
+      <tr><td><code>REPORTS_BUCKET</code></td><td>R2 bucket binding (physio-reports)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>11. Database Schema</h2>
+  <p>Run <code>supabase_migration.sql</code> in Supabase SQL Editor. Tables:</p>
+  <table>
+    <thead><tr><th>Table</th><th>Key columns</th></tr></thead>
+    <tbody>
+      <tr><td><code>clinics</code></td><td>id, name, address, phone, active</td></tr>
+      <tr><td><code>profiles</code></td><td>id, email, password, role, clinic_id, status</td></tr>
+      <tr><td><code>patients</code></td><td>id, clinic_id (nullable), demographics, reports JSONB, home_visit_details JSONB</td></tr>
+      <tr><td><code>therapy_sessions</code></td><td>id, patient_id, clinic_id (nullable), scheduled_at, session_type, therapy_level, amount_collected, status</td></tr>
+      <tr><td><code>clinic_expenses</code></td><td>id, clinic_id, category, amount, date, recurrence, notes</td></tr>
+      <tr><td><code>equipment</code></td><td>id, clinic_id, name, category, condition, purchase_cost, serial_number</td></tr>
+    </tbody>
+  </table>
+  <p>RLS: permissive <code>allow_all_*</code> policies. Grants on expenses/equipment for anon role.</p>
+</section>
+
+<!-- PATTERNS -->
+<section class="page content-page">
+  <div class="doc-header"><span class="brand">PhysioCare Portal</span><span class="doc-type">Technical · §12</span></div>
+  <h2>12. Key Implementation Patterns</h2>
+
+  <h3>Atomic Home Visit Sync</h3>
+  <p><code>syncHomeVisitLog()</code> saves patient homeVisitDetails and creates/updates the linked TherapySession in one operation — avoids race conditions from dual Supabase calls.</p>
+
+  <h3>Unified Modal Design System</h3>
+  <p>All modals use: <code>modal-accent</code> → <code>modal-header</code> → <code>modal-body</code> → <code>modal-footer</code> CSS classes.</p>
+
+  <h3>Patient Type Detection</h3>
+  <pre style="background:#f1f5f4;padding:12px;border-radius:8px;font-size:8.5pt;font-family:JetBrains Mono,monospace">
+function isHomeOnlyPatient(p) {
+  return p.clinicId === null || Boolean(p.homeVisitDetails);
+}
+  </pre>
+
+  <h3>Multi-Patient Calendar Booking</h3>
+  <p>Calendar slot booking supports selecting multiple patients; creates one TherapySession per patient at the same scheduledAt timestamp.</p>
+
+  <h3>Local Development</h3>
+  <pre style="background:#f1f5f4;padding:12px;border-radius:8px;font-size:8.5pt;font-family:JetBrains Mono,monospace">
+# Frontend
+cp .env.example .env.local   # fill in values
+npm run dev                   # http://localhost:5173
+
+# R2 Worker (separate terminal)
+cd workers/r2-reports
+npm run dev                   # http://localhost:8787
+# Set VITE_R2_API_URL=http://localhost:8787 in .env.local
+  </pre>
+
+  <h3>Default Admin Account (after migration)</h3>
+  <p>Email: <code>admin@physiocare.local</code> · Password: <code>admin123</code> — change immediately in production.</p>
+
+  <p class="footer-note">PhysioCare Portal · Technical Documentation · Confidential · June 2026</p>
+</section>
+
+</body>
+</html>

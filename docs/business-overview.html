@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhysioCare Portal — Business Overview</title>
+  <link rel="stylesheet" href="styles/doc-shared.css" />
+</head>
+<body>
+
+<!-- ═══════════════ COVER ═══════════════ -->
+<section class="cover">
+  <div class="cover-badge">PhysioCare Clinic Portal · v0.1</div>
+  <h1>Business Overview &amp; Feature Guide</h1>
+  <p class="subtitle">A complete guide to workflows, user roles, and business capabilities for managing multi-clinic physiotherapy operations.</p>
+  <div class="cover-icon-grid">
+    <div class="cover-icon">🏥</div>
+    <div class="cover-icon">👥</div>
+    <div class="cover-icon">📅</div>
+    <div class="cover-icon">💰</div>
+  </div>
+  <dl class="cover-meta">
+    <div><dt>Document type</dt><dd>Business Overview</dd></div>
+    <div><dt>Audience</dt><dd>Clinic owners, admins, operations staff</dd></div>
+    <div><dt>Product</dt><dd>PhysioCare Portal</dd></div>
+    <div><dt>Version</dt><dd>June 2026</dd></div>
+  </dl>
+</section>
+
+<!-- ═══════════════ TOC ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview</span>
+  </div>
+  <h2>Table of Contents</h2>
+  <ol class="toc">
+    <li><span class="num">1</span><span class="title">Executive Summary</span></li>
+    <li><span class="num">2</span><span class="title">Who Uses the Portal</span></li>
+    <li><span class="num">3</span><span class="title">Module Overview</span></li>
+    <li><span class="num">4</span><span class="title">Patient Management</span></li>
+    <li><span class="num">5</span><span class="title">Scheduling &amp; Sessions</span></li>
+    <li><span class="num">6</span><span class="title">Home Visit Operations</span></li>
+    <li><span class="num">7</span><span class="title">Revenue Tracking</span></li>
+    <li><span class="num">8</span><span class="title">Reports &amp; Documents</span></li>
+    <li><span class="num">9</span><span class="title">Administration</span></li>
+    <li><span class="num">10</span><span class="title">Key User Journeys</span></li>
+  </ol>
+</section>
+
+<!-- ═══════════════ EXEC SUMMARY ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §1</span>
+  </div>
+  <h2>1. Executive Summary</h2>
+  <p class="lead">PhysioCare Portal is an internal clinic management system designed for physiotherapy practices operating one or more clinic locations, with optional home-visit care.</p>
+  <p>It replaces fragmented spreadsheets and paper records with a single workspace for patient records, therapy scheduling, session completion, revenue collection, staff management, and operational cost tracking — all in Indian Rupees (₹).</p>
+
+  <div class="card-grid">
+    <div class="card accent">
+      <div class="card-icon">🎯</div>
+      <h4>Primary Goal</h4>
+      <p>Give clinic admins and physiotherapists one calm workspace to manage patients, sessions, and finances without switching tools.</p>
+    </div>
+    <div class="card accent">
+      <div class="card-icon">🏢</div>
+      <h4>Multi-Clinic Ready</h4>
+      <p>Support multiple clinic locations with staff scoped to their assigned clinic, while admins see everything.</p>
+    </div>
+    <div class="card amber">
+      <div class="card-icon">🏠</div>
+      <h4>Home &amp; Clinic Care</h4>
+      <p>Separate workflows for in-clinic therapy and home-only patients, each with dedicated dashboards.</p>
+    </div>
+    <div class="card violet">
+      <div class="card-icon">📊</div>
+      <h4>Revenue Visibility</h4>
+      <p>Track actual collected revenue vs estimated revenue from scheduled session amounts.</p>
+    </div>
+  </div>
+
+  <div class="diagram-wrap avoid-break">
+    <svg viewBox="0 0 620 200" width="620" xmlns="http://www.w3.org/2000/svg">
+      <rect x="10" y="70" width="110" height="60" rx="10" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="2"/>
+      <text x="65" y="96" text-anchor="middle" font-size="11" font-weight="700" fill="#0a7a6d">Patients</text>
+      <text x="65" y="114" text-anchor="middle" font-size="9" fill="#475569">Records &amp; reports</text>
+      <rect x="170" y="70" width="110" height="60" rx="10" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="2"/>
+      <text x="225" y="96" text-anchor="middle" font-size="11" font-weight="700" fill="#0a7a6d">Sessions</text>
+      <text x="225" y="114" text-anchor="middle" font-size="9" fill="#475569">Schedule &amp; complete</text>
+      <rect x="330" y="70" width="110" height="60" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+      <text x="385" y="96" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">Home Visits</text>
+      <text x="385" y="114" text-anchor="middle" font-size="9" fill="#475569">Field care ops</text>
+      <rect x="490" y="70" width="110" height="60" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+      <text x="545" y="96" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">Finance</text>
+      <text x="545" y="114" text-anchor="middle" font-size="9" fill="#475569">Revenue &amp; costs</text>
+      <path d="M120 100 L170 100" stroke="#0e9f8e" stroke-width="2" marker-end="url(#arr)"/>
+      <path d="M280 100 L330 100" stroke="#0e9f8e" stroke-width="2"/>
+      <path d="M440 100 L490 100" stroke="#0e9f8e" stroke-width="2"/>
+      <text x="310" y="30" text-anchor="middle" font-size="13" font-weight="800" fill="#0f1e24">PhysioCare Portal — Core Pillars</text>
+      <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#0e9f8e"/></marker></defs>
+    </svg>
+    <p class="diagram-caption">Figure 1 — Four operational pillars of the portal</p>
+  </div>
+</section>
+
+<!-- ═══════════════ ROLES ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §2</span>
+  </div>
+  <h2>2. Who Uses the Portal</h2>
+
+  <table>
+    <thead><tr><th>Role</th><th>Access Scope</th><th>Key Capabilities</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Admin</strong> <span class="badge badge-violet">Full access</span></td>
+        <td>All clinics and all data</td>
+        <td>Manage clinics, approve staff, view all dashboards, expenses &amp; equipment, full patient/session access</td>
+      </tr>
+      <tr>
+        <td><strong>Staff</strong> <span class="badge badge-teal">Clinic-scoped</span></td>
+        <td>Assigned clinic only</td>
+        <td>Patients, sessions, calendar, home visits for their clinic; cannot access Clinics, Staff, or Expenses pages</td>
+      </tr>
+      <tr>
+        <td><strong>Pending Staff</strong> <span class="badge badge-amber">Awaiting approval</span></td>
+        <td>None until approved</td>
+        <td>Can self-register; admin must set status to Active before login works</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Staff Onboarding Flow</h3>
+  <div class="flow-steps avoid-break">
+    <div class="flow-step"><strong>1. Sign up</strong><span>Staff submits registration with clinic choice</span></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><strong>2. Pending</strong><span>Account created with Pending status</span></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><strong>3. Admin review</strong><span>Admin approves on Staff page</span></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><strong>4. Active</strong><span>Staff can log in and work</span></div>
+  </div>
+
+  <div class="callout">
+    <strong>Session security</strong>
+    <p>Users are automatically logged out after 30 minutes of inactivity to protect patient data.</p>
+  </div>
+</section>
+
+<!-- ═══════════════ MODULES ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §3</span>
+  </div>
+  <h2>3. Module Overview</h2>
+  <p>The portal is organised into dedicated pages accessible from the sidebar navigation.</p>
+
+  <div class="card-grid card-grid-3 avoid-break">
+    <div class="card"><div class="card-icon">📊</div><h4>Clinic Dashboard</h4><p>KPIs for clinic sessions: active patients, today's sessions, revenue, weekly charts, upcoming appointments.</p></div>
+    <div class="card amber"><div class="card-icon">🏠</div><h4>Home Dashboard</h4><p>Home-visit KPIs: patient count, visit status breakdown, upcoming visits, patients needing attention.</p></div>
+    <div class="card"><div class="card-icon">👤</div><h4>Patients</h4><p>Searchable patient directory with clinic/home filters. Add clinic or home-only patients.</p></div>
+    <div class="card"><div class="card-icon">💪</div><h4>Sessions</h4><p>All clinic therapy sessions grouped by patient. Complete, edit, cancel, record walk-ins.</p></div>
+    <div class="card amber"><div class="card-icon">🚗</div><h4>Home Visits</h4><p>Schedule recurring home visits. Manage per-patient visit lists and completion.</p></div>
+    <div class="card"><div class="card-icon">📅</div><h4>Calendar</h4><p>Day/month clinic calendar with slot booking. Book one or multiple patients per slot.</p></div>
+    <div class="card violet"><div class="card-icon">🏢</div><h4>Clinics</h4><p>Admin: create/edit clinics, assign staff, activate/deactivate locations.</p></div>
+    <div class="card violet"><div class="card-icon">🔑</div><h4>Staff</h4><p>Admin: manage accounts, roles, job titles, clinic assignment, approvals.</p></div>
+    <div class="card violet"><div class="card-icon">🧾</div><h4>Expenses &amp; Equipment</h4><p>Admin: track clinic costs, consumables inventory, equipment condition.</p></div>
+  </div>
+</section>
+
+<!-- ═══════════════ PATIENTS ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §4</span>
+  </div>
+  <h2>4. Patient Management</h2>
+
+  <h3>Patient Types</h3>
+  <table>
+    <thead><tr><th>Type</th><th>Description</th><th>Clinic Assignment</th><th>List Indicator</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Clinic patient</strong></td>
+        <td>Receives therapy at a clinic location</td>
+        <td>Must select a clinic</td>
+        <td>Clinic name shown</td>
+      </tr>
+      <tr>
+        <td><strong>Home only patient</strong></td>
+        <td>Physiotherapy delivered at the patient's home; no clinic visit</td>
+        <td>No clinic required</td>
+        <td>🏠 Home only badge + amber avatar</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Patient Record Includes</h3>
+  <ul>
+    <li><strong>Personal:</strong> Name, phone, DOB, gender, address, emergency contact, referral source</li>
+    <li><strong>Clinical:</strong> Signs, symptoms, diagnosis, complications, surgeries, notes</li>
+    <li><strong>Home visit details</strong> (home only): Caregiver info, condition summary, start/discharge dates</li>
+    <li><strong>Reports:</strong> Uploaded documents (PDF, images, Word) with title, date, and notes</li>
+    <li><strong>Session history:</strong> Full timeline of scheduled and completed therapies</li>
+  </ul>
+
+  <h3>Add Patient Flow</h3>
+  <div class="diagram-wrap avoid-break">
+    <svg viewBox="0 0 600 280" width="600" xmlns="http://www.w3.org/2000/svg">
+      <rect x="20" y="20" width="130" height="50" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="85" y="42" text-anchor="middle" font-size="10" font-weight="700" fill="#5b21b6">Choose type</text>
+      <text x="85" y="58" text-anchor="middle" font-size="8" fill="#475569">Clinic or Home only</text>
+      <rect x="20" y="90" width="130" height="50" rx="8" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="1.5"/>
+      <text x="85" y="112" text-anchor="middle" font-size="10" font-weight="700" fill="#0a7a6d">Personal info</text>
+      <text x="85" y="128" text-anchor="middle" font-size="8" fill="#475569">Contact &amp; demographics</text>
+      <rect x="20" y="160" width="130" height="50" rx="8" fill="#e0f5f2" stroke="#0e9f8e" stroke-width="1.5"/>
+      <text x="85" y="182" text-anchor="middle" font-size="10" font-weight="700" fill="#0a7a6d">Clinical data</text>
+      <text x="85" y="198" text-anchor="middle" font-size="8" fill="#475569">Diagnosis &amp; history</text>
+      <rect x="20" y="230" width="130" height="50" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="85" y="252" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">Home details</text>
+      <text x="85" y="266" text-anchor="middle" font-size="8" fill="#475569">If home only</text>
+      <line x1="150" y1="45" x2="200" y2="45" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4"/>
+      <line x1="150" y1="115" x2="200" y2="115" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4"/>
+      <line x1="150" y1="185" x2="200" y2="185" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4"/>
+      <rect x="210" y="60" width="360" height="160" rx="12" fill="#f8fafa" stroke="#e2ece9" stroke-width="1.5"/>
+      <text x="390" y="90" text-anchor="middle" font-size="12" font-weight="800" fill="#0f1e24">Patient Profile Page</text>
+      <text x="240" y="120" font-size="9" fill="#475569">• Schedule clinic or home sessions</text>
+      <text x="240" y="140" font-size="9" fill="#475569">• View session timeline &amp; revenue</text>
+      <text x="240" y="160" font-size="9" fill="#475569">• Upload &amp; view medical reports</text>
+      <text x="240" y="180" font-size="9" fill="#475569">• Home visit calendar log (home only)</text>
+      <text x="240" y="200" font-size="9" fill="#475569">• Edit or delete patient record</text>
+    </svg>
+    <p class="diagram-caption">Figure 2 — Patient onboarding to ongoing care</p>
+  </div>
+</section>
+
+<!-- ═══════════════ SESSIONS ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §5</span>
+  </div>
+  <h2>5. Scheduling &amp; Sessions</h2>
+
+  <h3>Session Types</h3>
+  <table>
+    <thead><tr><th>Type</th><th>Where</th><th>Time Slots</th><th>Scheduling From</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-teal">Clinic</span></td><td>At clinic location</td><td>09:00 – 20:30 (30-min slots)</td><td>Sessions page, Calendar, Patient profile, Bulk scheduler</td></tr>
+      <tr><td><span class="badge badge-amber">Home</span></td><td>Patient's home</td><td>09:00 – 17:30 (30-min slots)</td><td>Home Visits page, Patient profile</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Therapy Configuration</h3>
+  <ul>
+    <li><strong>Therapy types:</strong> US, TENS, IFT, SWD, Wax Bath, Cupping, Dry Needling, Exercise, Manual Therapy, and more (multi-select)</li>
+    <li><strong>Levels:</strong> Basic, Rehab, Advance — shown as colour-coded badges</li>
+    <li><strong>Dual therapy:</strong> Schedule two therapy types at different times on the same day</li>
+    <li><strong>Bulk scheduling:</strong> Create many sessions at once by count + frequency, or date range + frequency</li>
+  </ul>
+
+  <h3>Session Lifecycle</h3>
+  <div class="flow-steps avoid-break">
+    <div class="flow-step"><strong>Scheduled</strong><span>Session booked; optional estimated amount (₹)</span></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><strong>Completed</strong><span>Treatment notes + amount collected recorded</span></div>
+  </div>
+  <p style="margin-top:8px">Other statuses: <span class="badge badge-amber">Cancelled</span> <span class="badge badge-amber">No show</span></p>
+
+  <h3>Calendar Quick-Booking</h3>
+  <p>From the Calendar day view, click any empty slot to book instantly. Supports booking <strong>multiple patients</strong> into the same time slot (group sessions). Each patient gets their own session record.</p>
+
+  <h3>Walk-In Recording</h3>
+  <p>From the Sessions page, staff can record a completed walk-in session without prior scheduling — useful for same-day arrivals.</p>
+</section>
+
+<!-- ═══════════════ HOME VISITS ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §6</span>
+  </div>
+  <h2>6. Home Visit Operations</h2>
+  <p>Home visit workflows are intentionally separated from clinic operations so field teams can focus on home-care patients without clinic noise.</p>
+
+  <h3>Home Dashboard</h3>
+  <ul>
+    <li>Total home patients and visit status breakdown (scheduled, completed, cancelled)</li>
+    <li>Upcoming home visits list with quick navigation to patient profiles</li>
+    <li>"Needs attention" — patients with no upcoming or no completed visits</li>
+  </ul>
+
+  <h3>Home Visits Page</h3>
+  <ul>
+    <li>Schedule bulk home visits: select patient, therapy type, level, start date, time slot, number of visits, repeat interval</li>
+    <li>Patient cards collapsed by default — expand to see scheduled visits with actions</li>
+    <li>Mark visits complete with treatment notes and amount collected</li>
+  </ul>
+
+  <h3>Patient Profile — Home Visit Log</h3>
+  <p>Home-only patients have an interactive calendar on their profile. Staff mark individual days as done, which automatically creates or updates the linked therapy session and syncs revenue data.</p>
+</section>
+
+<!-- ═══════════════ REVENUE ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §7</span>
+  </div>
+  <h2>7. Revenue Tracking</h2>
+  <p>All amounts are in <strong>Indian Rupees (₹)</strong>. The portal distinguishes between money already collected and money expected from upcoming sessions.</p>
+
+  <table>
+    <thead><tr><th>Metric</th><th>When it counts</th><th>Where shown</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Actual revenue</strong> <span class="badge badge-teal">Collected</span></td>
+        <td>Session status = Completed AND amount collected is entered</td>
+        <td>Dashboard revenue cards, Sessions totals, Patient "Total paid"</td>
+      </tr>
+      <tr>
+        <td><strong>Estimated revenue</strong> <span class="badge badge-blue">Est.</span></td>
+        <td>Session status = Scheduled AND amount was pre-set at booking time</td>
+        <td>Dashboard, Sessions page, scheduled session badges ("Est. ₹…")</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="diagram-wrap avoid-break">
+    <svg viewBox="0 0 560 160" width="560" xmlns="http://www.w3.org/2000/svg">
+      <rect x="30" y="50" width="140" height="70" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+      <text x="100" y="78" text-anchor="middle" font-size="10" font-weight="700" fill="#1d4ed8">Schedule session</text>
+      <text x="100" y="96" text-anchor="middle" font-size="9" fill="#475569">Enter amount (optional)</text>
+      <text x="100" y="110" text-anchor="middle" font-size="8" fill="#3b82f6">→ Estimated revenue</text>
+      <path d="M170 85 L220 85" stroke="#0e9f8e" stroke-width="2" marker-end="url(#arr2)"/>
+      <rect x="230" y="50" width="140" height="70" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+      <text x="300" y="78" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">Mark complete</text>
+      <text x="300" y="96" text-anchor="middle" font-size="9" fill="#475569">Treatment notes required</text>
+      <text x="300" y="110" text-anchor="middle" font-size="8" fill="#475569">Confirm amount collected</text>
+      <path d="M370 85 L420 85" stroke="#0e9f8e" stroke-width="2" marker-end="url(#arr2)"/>
+      <rect x="430" y="50" width="100" height="70" rx="10" fill="#d1fae5" stroke="#22c55e" stroke-width="2"/>
+      <text x="480" y="82" text-anchor="middle" font-size="10" font-weight="700" fill="#065f46">Actual</text>
+      <text x="480" y="98" text-anchor="middle" font-size="10" font-weight="700" fill="#065f46">Revenue</text>
+      <text x="280" y="25" text-anchor="middle" font-size="12" font-weight="800" fill="#0f1e24">Revenue Flow</text>
+      <defs><marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#0e9f8e"/></marker></defs>
+    </svg>
+    <p class="diagram-caption">Figure 3 — From scheduled estimate to collected revenue</p>
+  </div>
+</section>
+
+<!-- ═══════════════ REPORTS ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §8–9</span>
+  </div>
+  <h2>8. Reports &amp; Documents</h2>
+  <p>Patient reports (X-rays, prescriptions, assessment PDFs) can be attached to any patient record during add or edit.</p>
+  <ul>
+    <li>Each report has a title, date, optional notes, and optional file upload</li>
+    <li>Supported formats: PDF, JPEG, PNG, WebP, DOC, DOCX (max 10 MB)</li>
+    <li>Files stored securely in Cloudflare R2 cloud storage when configured</li>
+    <li>Reports viewable from the patient profile; deleted automatically when patient is removed</li>
+  </ul>
+
+  <h2>9. Administration</h2>
+
+  <h3>Clinics (Admin)</h3>
+  <p>Create and manage clinic locations. Assign staff members to clinics. Activate or deactivate clinics without deleting history.</p>
+
+  <h3>Staff (Admin)</h3>
+  <p>Add staff with job title (Consultant Physiotherapist, Assistant, Intern, or custom), role (Admin/Staff), clinic assignment, and login credentials. Approve pending registrations.</p>
+
+  <h3>Expenses &amp; Equipment (Admin)</h3>
+  <table>
+    <thead><tr><th>Tab</th><th>Purpose</th><th>Key fields</th></tr></thead>
+    <tbody>
+      <tr><td>Expenses</td><td>Track clinic operating costs</td><td>Category (Rent, Utilities, Salaries…), amount, date, recurrence, notes</td></tr>
+      <tr><td>Equipment</td><td>Inventory of machines, tools, consumables</td><td>Name, category, purchase cost, condition, serial number; quick-pick consumables</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══════════════ JOURNEYS ═══════════════ -->
+<section class="page content-page">
+  <div class="doc-header">
+    <span class="brand">PhysioCare Portal</span>
+    <span class="doc-type">Business Overview · §10</span>
+  </div>
+  <h2>10. Key User Journeys</h2>
+
+  <h3>Journey A — New clinic patient, first session</h3>
+  <ol>
+    <li>Admin/staff logs in → Patients → Add patient → Clinic patient</li>
+    <li>Fill personal + clinical details → Save</li>
+    <li>Open patient profile → Schedule clinic → Choose therapy types, dates, optional amount</li>
+    <li>On session day → Sessions page → Mark complete → Enter notes + amount collected</li>
+    <li>Revenue appears on Clinic Dashboard as actual collected revenue</li>
+  </ol>
+
+  <h3>Journey B — Home-only patient care</h3>
+  <ol>
+    <li>Add patient → Home only → Fill caregiver + condition details</li>
+    <li>Home Visits → Schedule bulk visits (e.g. 12 visits, every 2 days)</li>
+    <li>Track on Home Dashboard; expand patient card to manage individual visits</li>
+    <li>Mark days complete on profile calendar or Home Visits list</li>
+  </ol>
+
+  <h3>Journey C — Admin monthly review</h3>
+  <ol>
+    <li>Clinic Dashboard → Review revenue, session volume, upcoming appointments</li>
+    <li>Expenses &amp; Equipment → Check monthly spend and inventory condition</li>
+    <li>Staff → Approve any pending registrations</li>
+    <li>Calendar → Review clinic capacity and booking patterns</li>
+  </ol>
+
+  <div class="callout">
+    <strong>Demo mode</strong>
+    <p>Without cloud configuration, the portal runs in demo mode using browser local storage. All features work locally for evaluation; connect Supabase and R2 for production persistence.</p>
+  </div>
+
+  <p class="footer-note">PhysioCare Portal · Business Overview · Confidential · June 2026</p>
+</section>
+
+</body>
+</html>
