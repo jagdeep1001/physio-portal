@@ -31,9 +31,18 @@ export function genVisitSlots(startH: number, endH: number): string[] {
 export const HOME_VISIT_SLOTS = [...genVisitSlots(9, 18), '18:00'];
 export const HOME_VISIT_SLOT_SET = new Set(HOME_VISIT_SLOTS);
 
+/** Clinic sessions: 9:00 AM through 9:00 PM. */
+export const CLINIC_VISIT_SLOTS = genVisitSlots(9, 21);
+export const CLINIC_VISIT_SLOT_SET = new Set(CLINIC_VISIT_SLOTS);
+
 export function isHomeVisitSlot(time: string): boolean {
   const hhmm = time.length >= 5 ? time.slice(0, 5) : time;
   return HOME_VISIT_SLOT_SET.has(hhmm);
+}
+
+export function isClinicVisitSlot(time: string): boolean {
+  const hhmm = time.length >= 5 ? time.slice(0, 5) : time;
+  return CLINIC_VISIT_SLOT_SET.has(hhmm);
 }
 
 export function formatVisitSlotLabel(slot: string): string {
@@ -44,6 +53,12 @@ export function snapToHomeVisitSlot(time: string): string {
   const hhmm = time.length >= 5 ? time.slice(0, 5) : time;
   if (isHomeVisitSlot(hhmm)) return hhmm;
   return HOME_VISIT_SLOTS[0];
+}
+
+export function snapToClinicVisitSlot(time: string): string {
+  const hhmm = time.length >= 5 ? time.slice(0, 5) : time;
+  if (isClinicVisitSlot(hhmm)) return hhmm;
+  return CLINIC_VISIT_SLOTS[0];
 }
 
 /** Canonical app form: YYYY-MM-DDTHH:mm (no timezone). */

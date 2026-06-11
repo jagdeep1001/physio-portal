@@ -3050,6 +3050,52 @@ textarea { min-height: 76px; resize: vertical; }
 .home-schedule-grid .home-dual-hint {
   grid-column: 1 / -1;
 }
+.patient-group-bulk-btn {
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.hv-bulk-edit-btn {
+  font-size: 0.74rem;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+.bulk-edit-hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+.bulk-edit-field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.bulk-edit-preview {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.bulk-edit-preview-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--slate);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.bulk-edit-preview-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.78rem;
+  color: var(--slate);
+}
+.bulk-edit-preview-list li { margin-bottom: 3px; }
+.bulk-edit-preview-more { color: var(--muted); list-style: none; margin-left: -1.1rem; }
+
 .home-schedule-grid .form-actions {
   align-self: end;
 }

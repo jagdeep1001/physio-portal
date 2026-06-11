@@ -64,6 +64,7 @@ import type { InvoiceMode } from './lib/invoice';
 import { formatTherapyTypeDisplay, splitTherapyTypes, THERAPY_GROUPS, THERAPY_SEPARATOR } from './lib/therapy';
 import {
   buildLocalDateTime,
+  CLINIC_VISIT_SLOTS,
   formatLocalDateFromDate,
   formatLocalDateTimeFromDate,
   formatSessionDateTime,
@@ -80,6 +81,7 @@ import {
   sessionInMonth,
   sessionOnDate,
   sessionTimeKey,
+  snapToClinicVisitSlot,
   snapToHomeVisitSlot,
   toDateTimeLocalInput,
   toDbScheduledAt,
@@ -554,6 +556,37 @@ export function App() {
     }));
   };
 
+  const bulkUpdateSessions = async (items: { sessionId: string; updates: Partial<TherapySession> }[]) => {
+    if (items.length === 0) return;
+    if (supabase) {
+      try {
+        for (const { sessionId, updates } of items) {
+          const row: Record<string, unknown> = {};
+          if ('status' in updates)        row.status           = updates.status;
+          if ('completedAt' in updates)   row.completed_at     = updates.completedAt;
+          if ('amountCollected' in updates) row.amount_collected = updates.amountCollected;
+          if ('treatmentNotes' in updates) row.treatment_notes  = updates.treatmentNotes;
+          if ('therapyType' in updates)   row.therapy_type     = updates.therapyType;
+          if ('sessionType' in updates)   row.session_type     = updates.sessionType;
+          if ('therapyLevel' in updates)  row.therapy_level    = updates.therapyLevel;
+          if ('scheduledAt' in updates)   row.scheduled_at     = toDbScheduledAt(updates.scheduledAt!);
+          if ('notes' in updates)         row.notes            = updates.notes;
+          const update = await supabase.from('therapy_sessions').update(row).eq('id', sessionId);
+          if (update.error) throw update.error;
+        }
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); }
+      return;
+    }
+    persist((draftData) => ({
+      ...draftData,
+      therapySessions: draftData.therapySessions.map((s) => {
+        const item = items.find((i) => i.sessionId === s.id);
+        return item ? { ...s, ...item.updates } : s;
+      }),
+    }));
+  };
+
   const changeSessionStatus = (sessionId: string, status: SessionStatus) => {
     const completedAt = status === 'completed' ? new Date().toISOString() : null;
     void updateSession(sessionId, { status, completedAt: completedAt ?? undefined });
@@ -957,6 +990,7 @@ export function App() {
             allClinics={data.clinics}
             profiles={scoped.profiles}
             onUpdateSession={updateSession}
+            onBulkUpdateSessions={bulkUpdateSessions}
             onChangeStatus={changeSessionStatus}
             onDeleteSession={deleteSession}
             onScheduleNew={() => { setSchedulePreset({}); setPage('scheduleNew'); }}
@@ -970,6 +1004,7 @@ export function App() {
             preset={schedulePreset}
             onAddSession={addSession}
             onUpdateSession={updateSession}
+            onBulkUpdateSessions={bulkUpdateSessions}
             onChangeStatus={changeSessionStatus}
             onDeleteSession={deleteSession}
             onOpenPatient={goToPatientDetail}
@@ -995,6 +1030,7 @@ export function App() {
             currentUser={currentUser}
             onOpenPatient={goToPatientDetail}
             onAddSession={addSession}
+            onUpdateSession={updateSession}
           />
         )}
         {page === 'clinics' && currentUser.role === 'admin' && (
@@ -3200,12 +3236,13 @@ function PatientForm({
 // ─── Sessions View (list + actions) ──────────────────────────────────────────
 
 function SessionsView({
-  data, allClinics, profiles, onUpdateSession, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
+  data, allClinics, profiles, onUpdateSession, onBulkUpdateSessions, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
   profiles: Profile[];
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onBulkUpdateSessions: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
   onDeleteSession: (sessionId: string) => void;
   onScheduleNew: () => void;
@@ -3214,6 +3251,7 @@ function SessionsView({
   const [completingId, setCompletingId] = useState<string | null>(null);
   const [completionData, setCompletionData] = useState<CompletionFormData>(emptyCompletionForm);
   const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
+  const [bulkEditTarget, setBulkEditTarget] = useState<BulkEditTarget | null>(null);
   const [filterStatus, setFilterStatus] = useState<'all' | SessionStatus>('all');
   const [filterLevel, setFilterLevel] = useState<'all' | TherapyLevel>('all');
   const [filterPatient, setFilterPatient] = useState('');
@@ -3314,11 +3352,20 @@ function SessionsView({
         />
       )}
 
+      {bulkEditTarget && (
+        <BulkEditSessionsModal
+          target={bulkEditTarget}
+          onApply={(items) => { void onBulkUpdateSessions(items); setBulkEditTarget(null); }}
+          onClose={() => setBulkEditTarget(null)}
+        />
+      )}
+
       {/* Edit session modal */}
       {editingSession && (
         <EditSessionModal
           session={editingSession}
           data={data}
+          lockSessionType="clinic"
           onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
           onClose={() => setEditingSession(null)}
         />
@@ -3442,6 +3489,20 @@ function SessionsView({
                           <FileText size={14} />
                         </button>
                       )}
+                      {scheduled >= 2 && (
+                        <button
+                          type="button"
+                          className="secondary-button patient-group-bulk-btn"
+                          title="Bulk edit all scheduled sessions"
+                          onClick={() => setBulkEditTarget({
+                            patientName: patient?.name ?? 'Patient',
+                            sessionType: 'clinic',
+                            sessions: sessions.filter((s) => s.status === 'scheduled'),
+                          })}
+                        >
+                          <ClipboardList size={14} /> Bulk edit ({scheduled})
+                        </button>
+                      )}
                     </div>
 
                     {/* Expanded session rows — grouped by date */}
@@ -3554,13 +3615,14 @@ function SessionsView({
 // ─── Home Visits View (home-only scheduling + management) ─────────────────────
 
 function HomeVisitsView({
-  data, currentUser, preset, onAddSession, onUpdateSession, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
+  data, currentUser, preset, onAddSession, onUpdateSession, onBulkUpdateSessions, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   currentUser: Profile;
   preset: { patientId?: string; sessionType?: SessionType };
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onBulkUpdateSessions: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
   onDeleteSession: (sessionId: string) => void;
   onOpenPatient: (patientId: string) => void;
@@ -3584,6 +3646,8 @@ function HomeVisitsView({
   const [notes, setNotes] = useState('');
   const [completingId, setCompletingId] = useState<string | null>(null);
   const [completionData, setCompletionData] = useState<CompletionFormData>(emptyCompletionForm);
+  const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
+  const [bulkEditTarget, setBulkEditTarget] = useState<BulkEditTarget | null>(null);
 
   useEffect(() => {
     if (preset.patientId) {
@@ -3689,6 +3753,24 @@ function HomeVisitsView({
           onChange={(updates) => setCompletionData((prev) => ({ ...prev, ...updates }))}
           onSubmit={submitCompletion}
           onClose={() => { setCompletingId(null); setCompletionData(emptyCompletionForm()); }}
+        />
+      )}
+
+      {bulkEditTarget && (
+        <BulkEditSessionsModal
+          target={bulkEditTarget}
+          onApply={(items) => { void onBulkUpdateSessions(items); setBulkEditTarget(null); }}
+          onClose={() => setBulkEditTarget(null)}
+        />
+      )}
+
+      {editingSession && (
+        <EditSessionModal
+          session={editingSession}
+          data={data}
+          lockSessionType="home"
+          onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
+          onClose={() => setEditingSession(null)}
         />
       )}
 
@@ -3870,6 +3952,23 @@ function HomeVisitsView({
 
                     {/* Controls */}
                     <div className="hv-card-controls">
+                      {scheduled >= 2 && (
+                        <button
+                          type="button"
+                          className="secondary-button hv-bulk-edit-btn"
+                          title="Bulk edit all scheduled visits"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBulkEditTarget({
+                              patientName: patient?.name ?? 'Patient',
+                              sessionType: 'home',
+                              sessions: sessions.filter((s) => s.status === 'scheduled'),
+                            });
+                          }}
+                        >
+                          <ClipboardList size={13} /> Bulk edit
+                        </button>
+                      )}
                       <button className="ghost-button icon-only" title="Open patient record"
                         onClick={(e) => { e.stopPropagation(); patient && onOpenPatient(patient.id); }}>
                         <ExternalLink size={13} />
@@ -3908,6 +4007,10 @@ function HomeVisitsView({
                             <div className="hv-session-actions">
                               {session.status === 'scheduled' && (
                                 <>
+                                  <button className="secondary-button icon-only" title="Edit session"
+                                    onClick={() => setEditingSession(session)}>
+                                    <ClipboardList size={12} />
+                                  </button>
                                   <button className="primary-button icon-only" title="Mark complete"
                                     onClick={() => {
                                       setCompletingId(session.id);
@@ -3943,53 +4046,245 @@ function HomeVisitsView({
   );
 }
 
-// ─── Edit Session Modal ────────────────────────────────────────────────────────
+// ─── Bulk edit scheduled sessions ─────────────────────────────────────────────
 
-function EditSessionModal({
-  session, data, onSave, onClose,
+type BulkEditTarget = {
+  patientName: string;
+  sessionType: SessionType;
+  sessions: TherapySession[];
+};
+
+type BulkEditForm = {
+  shiftDays: string;
+  newTime: string;
+  therapyType: string;
+  therapyLevel: '' | TherapyLevel;
+  amountCollected: string;
+  notes: string;
+};
+
+const emptyBulkEditForm = (): BulkEditForm => ({
+  shiftDays: '',
+  newTime: '',
+  therapyType: '',
+  therapyLevel: '',
+  amountCollected: '',
+  notes: '',
+});
+
+function buildBulkSessionUpdates(session: TherapySession, form: BulkEditForm): Partial<TherapySession> {
+  const updates: Partial<TherapySession> = {};
+  let scheduledAt = session.scheduledAt;
+
+  if (form.shiftDays !== '' && form.shiftDays !== '0') {
+    const d = parseScheduledAt(scheduledAt);
+    d.setDate(d.getDate() + parseInt(form.shiftDays, 10));
+    scheduledAt = formatLocalDateTimeFromDate(d, sessionTimeKey(scheduledAt));
+  }
+  if (form.newTime) {
+    scheduledAt = buildLocalDateTime(sessionDateKey(scheduledAt), form.newTime);
+  }
+  if ((form.shiftDays !== '' && form.shiftDays !== '0') || form.newTime) {
+    updates.scheduledAt = scheduledAt;
+  }
+  if (form.therapyType.trim()) updates.therapyType = form.therapyType.trim();
+  if (form.therapyLevel) updates.therapyLevel = form.therapyLevel;
+  if (form.amountCollected !== '') updates.amountCollected = parseFloat(form.amountCollected);
+  if (form.notes !== '') updates.notes = form.notes;
+  return updates;
+}
+
+function BulkEditSessionsModal({
+  target, onApply, onClose,
 }: {
-  session: TherapySession;
-  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
-  onSave: (updates: Partial<TherapySession>) => void;
+  target: BulkEditTarget;
+  onApply: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
   onClose: () => void;
 }) {
-  const [form, setForm] = useState({
-    therapyType:   session.therapyType,
-    sessionType:   session.sessionType as SessionType,
-    therapyLevel:  session.therapyLevel as TherapyLevel,
-    scheduledAt:   toDateTimeLocalInput(session.scheduledAt),
-    homeDate:      sessionDateKey(session.scheduledAt),
-    homeTime:      snapToHomeVisitSlot(sessionTimeKey(session.scheduledAt)),
-    notes:         session.notes,
-  });
+  const [form, setForm] = useState(emptyBulkEditForm);
+  const [saving, setSaving] = useState(false);
+  const isHome = target.sessionType === 'home';
+  const slotOptions = isHome ? HOME_VISIT_SLOTS : CLINIC_VISIT_SLOTS;
+  const sorted = [...target.sessions].sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
 
-  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const set = (k: keyof BulkEditForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    const scheduledAt = form.sessionType === 'home'
+    const items = sorted
+      .map((session) => ({
+        sessionId: session.id,
+        updates: buildBulkSessionUpdates(session, form),
+      }))
+      .filter((item) => Object.keys(item.updates).length > 0);
+    if (items.length === 0) return;
+    setSaving(true);
+    onApply(items);
+    setSaving(false);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <form className="modal-panel bulk-edit-modal" style={{ maxWidth: 520 }} onSubmit={handleSubmit}>
+        <div className={`modal-accent ${isHome ? 'modal-accent-teal' : 'modal-accent-violet'}`} />
+        <div className="modal-header">
+          <div className="modal-header-icon">
+            {isHome ? <Home size={18} /> : <Stethoscope size={18} />}
+          </div>
+          <div>
+            <h3 className="modal-title">Bulk edit scheduled sessions</h3>
+            <p className="modal-sub">
+              {target.patientName} · {sorted.length} session{sorted.length !== 1 ? 's' : ''}
+            </p>
+          </div>
+          <button type="button" className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <p className="bulk-edit-hint">
+            Fill only the fields you want to change — blank fields are left unchanged on every session.
+          </p>
+
+          <div className="form-two-col">
+            <label>
+              Shift all dates (days)
+              <input
+                type="number"
+                value={form.shiftDays}
+                onChange={(e) => set('shiftDays', e.target.value)}
+                placeholder="e.g. 1 or -2"
+              />
+            </label>
+            <label>
+              Set time slot
+              <select value={form.newTime} onChange={(e) => set('newTime', e.target.value)}>
+                <option value="">— keep current times —</option>
+                {slotOptions.map((slot) => (
+                  <option key={slot} value={slot}>{formatVisitSlotLabel(slot)}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <label>
+            Therapy type
+            <TherapyTypeSelect value={form.therapyType} onChange={(v) => set('therapyType', v)} />
+            {!form.therapyType && <small className="bulk-edit-field-hint">Leave empty to keep current therapy on each session</small>}
+          </label>
+
+          <label>
+            Therapy level
+            <select value={form.therapyLevel} onChange={(e) => set('therapyLevel', e.target.value)}>
+              <option value="">— keep current level —</option>
+              <option value="basic">Basic</option>
+              <option value="rehab">Rehab</option>
+              <option value="advance">Advance</option>
+            </select>
+          </label>
+
+          <label>
+            Estimated amount (₹)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.amountCollected}
+              onChange={(e) => set('amountCollected', e.target.value)}
+              placeholder="Leave blank to keep current"
+            />
+          </label>
+
+          <label>
+            Notes
+            <textarea
+              rows={2}
+              value={form.notes}
+              onChange={(e) => set('notes', e.target.value)}
+              placeholder="Leave blank to keep current notes"
+            />
+          </label>
+
+          <div className="bulk-edit-preview">
+            <span className="bulk-edit-preview-label">Sessions to update</span>
+            <ul className="bulk-edit-preview-list">
+              {sorted.slice(0, 8).map((s) => (
+                <li key={s.id}>
+                  {formatSessionDateTime(s.scheduledAt)} · {formatTherapyTypeDisplay(s.therapyType)}
+                </li>
+              ))}
+              {sorted.length > 8 && <li className="bulk-edit-preview-more">+{sorted.length - 8} more</li>}
+            </ul>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
+          <button className="primary-button" type="submit" disabled={saving}>
+            <Check size={14} /> Apply to {sorted.length} session{sorted.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ─── Edit Session Modal ────────────────────────────────────────────────────────
+
+function EditSessionModal({
+  session, data, lockSessionType, onSave, onClose,
+}: {
+  session: TherapySession;
+  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
+  lockSessionType?: SessionType;
+  onSave: (updates: Partial<TherapySession>) => void;
+  onClose: () => void;
+}) {
+  const effectiveType = lockSessionType ?? (session.sessionType as SessionType);
+  const [form, setForm] = useState({
+    therapyType:   session.therapyType,
+    sessionType:   effectiveType,
+    therapyLevel:  session.therapyLevel as TherapyLevel,
+    homeDate:      sessionDateKey(session.scheduledAt),
+    homeTime:      snapToHomeVisitSlot(sessionTimeKey(session.scheduledAt)),
+    clinicDate:    sessionDateKey(session.scheduledAt),
+    clinicTime:    snapToClinicVisitSlot(sessionTimeKey(session.scheduledAt)),
+    notes:         session.notes,
+    amountCollected: session.amountCollected != null ? String(session.amountCollected) : '',
+  });
+
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const isHome = form.sessionType === 'home';
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const scheduledAt = isHome
       ? buildLocalDateTime(form.homeDate, form.homeTime)
-      : form.scheduledAt;
+      : buildLocalDateTime(form.clinicDate, form.clinicTime);
     onSave({
-      therapyType:  form.therapyType,
-      sessionType:  form.sessionType,
-      therapyLevel: form.therapyLevel,
+      therapyType:     form.therapyType,
+      sessionType:     form.sessionType,
+      therapyLevel:    form.therapyLevel,
       scheduledAt,
-      notes:        form.notes,
+      notes:           form.notes,
+      amountCollected: form.amountCollected !== '' ? parseFloat(form.amountCollected) : null,
     });
   };
 
   const patient = data.patients.find((p) => p.id === session.patientId);
+  const slotOptions = isHome ? HOME_VISIT_SLOTS : CLINIC_VISIT_SLOTS;
 
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <form className="modal-panel" style={{ maxWidth: 440 }} onSubmit={handleSubmit}>
-        <div className="modal-accent modal-accent-violet" />
+        <div className={`modal-accent ${isHome ? 'modal-accent-teal' : 'modal-accent-violet'}`} />
         <div className="modal-header">
-          <div className="modal-header-icon"><ClipboardList size={18} /></div>
+          <div className="modal-header-icon">
+            {isHome ? <Home size={18} /> : <Stethoscope size={18} />}
+          </div>
           <div>
-            <h3 className="modal-title">Edit session</h3>
-            <p className="modal-sub">{patient?.name ?? 'Unknown'}</p>
+            <h3 className="modal-title">Edit scheduled session</h3>
+            <p className="modal-sub">
+              {patient?.name ?? 'Unknown'}
+              {lockSessionType === 'home' ? ' · Home visit' : lockSessionType === 'clinic' ? ' · Clinic' : ''}
+            </p>
           </div>
           <button type="button" className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
@@ -4000,40 +4295,46 @@ function EditSessionModal({
           </label>
           <label>
             Date &amp; time
-            {form.sessionType === 'home' ? (
-              <div className="form-two-col" style={{ marginTop: 6 }}>
-                <input type="date" required value={form.homeDate} onChange={(e) => set('homeDate', e.target.value)} />
-                <select value={form.homeTime} onChange={(e) => set('homeTime', e.target.value)}>
-                  {HOME_VISIT_SLOTS.map((slot) => (
-                    <option key={slot} value={slot}>{formatVisitSlotLabel(slot)}</option>
-                  ))}
-                </select>
-              </div>
-            ) : (
-              <input type="datetime-local" value={form.scheduledAt} onChange={(e) => set('scheduledAt', e.target.value)} />
-            )}
-          </label>
-          <label>
-            Session type
-            <div className="toggle-row">
-              {(['clinic', 'home'] as SessionType[]).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  className={`toggle-btn ${form.sessionType === t ? 'active' : ''}`}
-                  onClick={() => setForm((f) => ({
-                    ...f,
-                    sessionType: t,
-                    homeTime: t === 'home' ? snapToHomeVisitSlot(sessionTimeKey(f.scheduledAt)) : f.homeTime,
-                    homeDate: t === 'home' ? sessionDateKey(f.scheduledAt) : f.homeDate,
-                  }))}
-                >
-                  {t === 'clinic' ? <Stethoscope size={13} /> : <Home size={13} />}
-                  {t === 'clinic' ? 'Clinic' : 'Home visit'}
-                </button>
-              ))}
+            <div className="form-two-col" style={{ marginTop: 6 }}>
+              <input
+                type="date"
+                required
+                value={isHome ? form.homeDate : form.clinicDate}
+                onChange={(e) => set(isHome ? 'homeDate' : 'clinicDate', e.target.value)}
+              />
+              <select
+                value={isHome ? form.homeTime : form.clinicTime}
+                onChange={(e) => set(isHome ? 'homeTime' : 'clinicTime', e.target.value)}
+              >
+                {slotOptions.map((slot) => (
+                  <option key={slot} value={slot}>{formatVisitSlotLabel(slot)}</option>
+                ))}
+              </select>
             </div>
           </label>
+          {!lockSessionType && (
+            <label>
+              Session type
+              <div className="toggle-row">
+                {(['clinic', 'home'] as SessionType[]).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className={`toggle-btn ${form.sessionType === t ? 'active' : ''}`}
+                    onClick={() => setForm((f) => ({
+                      ...f,
+                      sessionType: t,
+                      homeTime: snapToHomeVisitSlot(f.homeTime),
+                      clinicTime: snapToClinicVisitSlot(f.clinicTime),
+                    }))}
+                  >
+                    {t === 'clinic' ? <Stethoscope size={13} /> : <Home size={13} />}
+                    {t === 'clinic' ? 'Clinic' : 'Home visit'}
+                  </button>
+                ))}
+              </div>
+            </label>
+          )}
           <label>
             Therapy level
             <div className="toggle-row">
@@ -4043,6 +4344,17 @@ function EditSessionModal({
                 </button>
               ))}
             </div>
+          </label>
+          <label>
+            Estimated amount (₹)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.amountCollected}
+              onChange={(e) => set('amountCollected', e.target.value)}
+              placeholder="Leave blank if unknown"
+            />
           </label>
           <label>
             Notes
@@ -4711,16 +5023,17 @@ function ScheduleNewPage({
 
 // ─── Calendar View ────────────────────────────────────────────────────────────
 
-const CLINIC_DAY_SLOTS = genVisitSlots(9, 21);  // 09:00 – 20:30
+const CLINIC_DAY_SLOTS = CLINIC_VISIT_SLOTS;
 
 function CalendarView({
-  data, allClinics, currentUser, onOpenPatient, onAddSession,
+  data, allClinics, currentUser, onOpenPatient, onAddSession, onUpdateSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
   currentUser: Profile;
   onOpenPatient: (patientId: string) => void;
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
+  onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
 }) {
   const now = new Date();
   const [view, setView]         = useState<'month' | 'day'>('day');
@@ -4731,6 +5044,7 @@ function CalendarView({
     currentUser.role === 'staff' && currentUser.clinicId ? currentUser.clinicId : 'all'
   );
   const [popover, setPopover]   = useState<TherapySession | null>(null);
+  const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
 
   // Quick-schedule booking state
   const [booking, setBooking]   = useState<{ date: string; time: string; type: SessionType; clinicId: string } | null>(null);
@@ -4898,6 +5212,14 @@ function CalendarView({
             )}
           </div>
           <div className="cal-popover-actions">
+            {popover.status === 'scheduled' && (
+              <button
+                className="secondary-button"
+                onClick={() => { setEditingSession(popover); setPopover(null); }}
+              >
+                <ClipboardList size={14} /> Edit session
+              </button>
+            )}
             <button className="primary-button" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
               <Users size={14} /> View patient
             </button>
@@ -4911,6 +5233,16 @@ function CalendarView({
   return (
     <div className="content-stack">
       {renderPopover()}
+
+      {editingSession && (
+        <EditSessionModal
+          session={editingSession}
+          data={data}
+          lockSessionType="clinic"
+          onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
+          onClose={() => setEditingSession(null)}
+        />
+      )}
 
       {/* ── Quick-schedule modal ── */}
       {booking && (
