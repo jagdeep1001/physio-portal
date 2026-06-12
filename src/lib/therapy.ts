@@ -3,12 +3,13 @@ export const THERAPY_SEPARATOR = '|';
 export const THERAPY_GROUPS = [
   {
     label: 'Basic',
-    options: ['US', 'TENS', 'IFT', 'Hot pack', 'WAX THERAPY', 'TRACTION (CERVICAL/LUMBAR)'],
+    options: ['US', 'TENS', 'IFT', 'Hot pack', 'WAX THERAPY', 'CERVICAL TRACTION', 'LUMBAR TRACTION'],
   },
   {
     label: 'Advanced',
     options: [
-      'Cupping Static/Dynamic',
+      'Static Cupping',
+      'Dynamic cupping',
       'Wet Cupping/Hijama',
       'Dry Needling',
       'IASTM',

@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { fromDbScheduledAt, toDbScheduledAt } from './datetime';
-import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, Profile, TherapySession } from '../types';
+import { normalizeMoney, withLegacyPayments } from './payments';
+import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, PaymentAllocation, PaymentMethod, PaymentRecord, Profile, TherapySession } from '../types';
 
 const supabaseUrl      = import.meta.env.VITE_SUPABASE_URL      as string | undefined;
 const supabaseAnonKey  = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -43,6 +44,9 @@ type PatientRow = {
   address: string;
   signs: string | null;
   symptoms: string | null;
+  patient_history: string | null;
+  case_type: string | null;
+  condition: string | null;
   diagnosis: string;
   referral_source: string;
   emergency_contact: string;
@@ -70,6 +74,18 @@ type TherapySessionRow = {
   amount_collected: number | null;
 };
 
+type PaymentRow = {
+  id: string;
+  patient_id: string;
+  clinic_id: string | null;
+  paid_at: string;
+  amount: number;
+  method: PaymentMethod;
+  notes: string | null;
+  allocations: PaymentAllocation[] | null;
+  created_at: string;
+};
+
 type ClinicExpenseRow = {
   id: string;
   clinic_id: string;
@@ -87,10 +103,22 @@ type EquipmentRow = {
   category: string;
   purchase_date: string | null;
   purchase_cost: number | null;
+  quantity: number | null;
+  unit_price: number | null;
+  minimum_quantity: number | null;
+  details: string | null;
   condition: string;
   serial_number: string;
   notes: string;
 };
+
+function isMissingTableError(error: unknown, tableName: string): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const value = error as { code?: unknown; message?: unknown; details?: unknown };
+  const haystack = [value.code, value.message, value.details].map(String).join(' ').toLowerCase();
+  return haystack.includes(tableName.toLowerCase()) &&
+    (haystack.includes('does not exist') || haystack.includes('could not find') || haystack.includes('pgrst205'));
+}
 
 // ── Mappers ────────────────────────────────────────────────
 
@@ -122,6 +150,9 @@ export function mapPatient(row: PatientRow): Patient {
     address: row.address ?? '',
     signs:            row.signs    ?? '',
     symptoms:         row.symptoms ?? '',
+    patientHistory:   row.patient_history ?? '',
+    caseType:         row.case_type ?? '',
+    condition:        row.condition ?? row.home_visit_details?.condition ?? '',
     diagnosis: row.diagnosis ?? '',
     referralSource: row.referral_source ?? '',
     emergencyContact: row.emergency_contact ?? '',
@@ -160,6 +191,23 @@ export function mapTherapySession(row: TherapySessionRow): TherapySession {
   };
 }
 
+export function mapPayment(row: PaymentRow): PaymentRecord {
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    clinicId: row.clinic_id,
+    paidAt: row.paid_at,
+    amount: normalizeMoney(Number(row.amount)),
+    method: row.method ?? 'Cash',
+    notes: row.notes ?? '',
+    allocations: (row.allocations ?? []).map((allocation) => ({
+      ...allocation,
+      amount: normalizeMoney(allocation.amount),
+    })),
+    createdAt: row.created_at,
+  };
+}
+
 export function mapClinicExpense(row: ClinicExpenseRow): ClinicExpense {
   return {
     id: row.id,
@@ -173,13 +221,20 @@ export function mapClinicExpense(row: ClinicExpenseRow): ClinicExpense {
 }
 
 export function mapEquipment(row: EquipmentRow): Equipment {
+  const legacyCost = row.purchase_cost != null ? Number(row.purchase_cost) : null;
+  const quantity = row.quantity != null ? Number(row.quantity) : 1;
+  const unitPrice = row.unit_price != null ? Number(row.unit_price) : legacyCost;
   return {
     id: row.id,
     clinicId: row.clinic_id,
     name: row.name,
     category: row.category as Equipment['category'],
     purchaseDate: row.purchase_date ?? '',
-    purchaseCost: row.purchase_cost != null ? Number(row.purchase_cost) : null,
+    purchaseCost: legacyCost,
+    quantity: Number.isFinite(quantity) && quantity >= 0 ? quantity : 1,
+    unitPrice: unitPrice != null && Number.isFinite(unitPrice) ? unitPrice : null,
+    minimumQuantity: row.minimum_quantity != null && Number.isFinite(Number(row.minimum_quantity)) ? Math.max(0, Number(row.minimum_quantity)) : 0,
+    details: row.details ?? '',
     condition: row.condition as Equipment['condition'],
     serialNumber: row.serial_number ?? '',
     notes: row.notes ?? '',
@@ -204,24 +259,33 @@ export async function loginWithProfiles(email: string, password: string): Promis
 export async function loadRemoteData(): Promise<AppData> {
   if (!supabase) throw new Error('Supabase is not configured.');
 
-  const [clinics, profiles, patients, therapySessions, expenses, equipment] = await Promise.all([
+  const [clinics, profiles, patients, therapySessions, payments, expenses, equipment] = await Promise.all([
     supabase.from('clinics').select('*').order('name'),
     supabase.from('profiles').select('*').order('name'),
     supabase.from('patients').select('*').order('name'),
     supabase.from('therapy_sessions').select('*').order('scheduled_at'),
+    supabase.from('patient_payments').select('*').order('paid_at'),
     supabase.from('clinic_expenses').select('*').order('date', { ascending: false }),
     supabase.from('equipment').select('*').order('name'),
   ]);
 
+  const paymentsTableMissing = isMissingTableError(payments.error, 'patient_payments');
   const error = clinics.error ?? profiles.error ?? patients.error ?? therapySessions.error
+    ?? (paymentsTableMissing ? null : payments.error)
     ?? expenses.error ?? equipment.error;
   if (error) throw error;
+
+  const mappedSessions = (therapySessions.data ?? []).map((row) => mapTherapySession(row as TherapySessionRow));
+  const mappedPayments = paymentsTableMissing
+    ? []
+    : (payments.data ?? []).map((row) => mapPayment(row as PaymentRow));
 
   return {
     clinics:         (clinics.data         ?? []).map((row) => mapClinic(row as ClinicRow)),
     profiles:        (profiles.data        ?? []).map((row) => mapProfile(row as ProfileRow)),
     patients:        (patients.data        ?? []).map((row) => mapPatient(row as PatientRow)),
-    therapySessions: (therapySessions.data ?? []).map((row) => mapTherapySession(row as TherapySessionRow)),
+    therapySessions: mappedSessions,
+    payments:        withLegacyPayments(mappedSessions, mappedPayments),
     expenses:        (expenses.data        ?? []).map((row) => mapClinicExpense(row as ClinicExpenseRow)),
     equipment:       (equipment.data       ?? []).map((row) => mapEquipment(row as EquipmentRow)),
   };
@@ -238,6 +302,9 @@ export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
   address:            patient.address,
   signs:              patient.signs ?? '',
   symptoms:           patient.symptoms ?? '',
+  patient_history:    patient.patientHistory ?? '',
+  case_type:          patient.caseType ?? '',
+  condition:          patient.condition ?? '',
   diagnosis:          patient.diagnosis,
   referral_source:    patient.referralSource,
   emergency_contact:  patient.emergencyContact,
@@ -282,6 +349,20 @@ export const toTherapySessionRow = (session: Omit<TherapySession, 'id'>) => ({
   amount_collected:  session.amountCollected,
 });
 
+export const toPaymentRow = (payment: Omit<PaymentRecord, 'id'>) => ({
+  patient_id:  payment.patientId,
+  clinic_id:   payment.clinicId || null,
+  paid_at:     payment.paidAt,
+  amount:      normalizeMoney(payment.amount),
+  method:      payment.method,
+  notes:       payment.notes,
+  allocations: payment.allocations.map((allocation) => ({
+    ...allocation,
+    amount: normalizeMoney(allocation.amount),
+  })),
+  created_at:  payment.createdAt,
+});
+
 export const toClinicExpenseRow = (expense: Omit<ClinicExpense, 'id'>) => ({
   clinic_id:  expense.clinicId,
   category:   expense.category,
@@ -297,6 +378,10 @@ export const toEquipmentRow = (item: Omit<Equipment, 'id'>) => ({
   category:       item.category,
   purchase_date:  item.purchaseDate || null,
   purchase_cost:  item.purchaseCost,
+  quantity:       Number(item.quantity) || 0,
+  unit_price:     item.unitPrice,
+  minimum_quantity: Number(item.minimumQuantity) || 0,
+  details:        item.details ?? '',
   condition:      item.condition,
   serial_number:  item.serialNumber ?? '',
   notes:          item.notes ?? '',

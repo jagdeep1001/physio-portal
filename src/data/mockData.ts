@@ -1,4 +1,5 @@
 import type { AppData, Clinic, Patient, Profile, TherapySession } from '../types';
+import { buildLegacyPayments } from '../lib/payments';
 
 export const demoPasswords: Record<string, string> = {
   'admin@physiocare.local': 'admin123',
@@ -73,6 +74,9 @@ export const patients: Patient[] = [
     address: '21 Maple Lane',
     signs: 'Reduced lumbar flexion, paraspinal muscle spasm',
     symptoms: 'Persistent lower back pain radiating to left leg, worse on prolonged sitting',
+    patientHistory: 'L4/L5 discectomy in 2023 with recurring lumbar stiffness after prolonged desk work.',
+    caseType: 'Post-operative rehab',
+    condition: 'Post-discectomy lower back pain',
     diagnosis: 'Lower back pain with reduced lumbar mobility',
     referralSource: 'Orthopedic referral',
     emergencyContact: 'James Carter, +1 555 3001',
@@ -110,6 +114,9 @@ export const patients: Patient[] = [
     address: '9 Cedar Court',
     signs: 'Mild swelling around knee, reduced quad strength',
     symptoms: 'Pain on deep flexion, instability sensation during lateral movement',
+    patientHistory: 'Competitive football injury followed by ACL reconstruction in March 2026.',
+    caseType: 'Sports injury',
+    condition: 'ACL post-op rehabilitation',
     diagnosis: 'ACL post-op rehabilitation',
     referralSource: 'Sports medicine clinic',
     emergencyContact: 'Anika Kapoor, +1 555 3005',
@@ -129,6 +136,9 @@ export const patients: Patient[] = [
     address: '70 Hill Road',
     signs: '',
     symptoms: 'Shoulder stiffness, pain at end-range abduction',
+    patientHistory: 'Gradual onset shoulder stiffness over several months with no recent surgery.',
+    caseType: 'Chronic pain',
+    condition: 'Frozen shoulder',
     diagnosis: 'Frozen shoulder',
     referralSource: 'Self referral',
     emergencyContact: 'Mateo Garcia, +1 555 3010',
@@ -148,6 +158,9 @@ export const patients: Patient[] = [
     address: '14 River Walk',
     signs: '',
     symptoms: 'Neck pain radiating to right arm, tingling in fingers',
+    patientHistory: 'Recurrent cervical pain with intermittent radicular symptoms.',
+    caseType: 'Chronic pain',
+    condition: 'Cervical radiculopathy',
     diagnosis: 'Cervical radiculopathy',
     referralSource: 'Neurology referral',
     emergencyContact: 'Mia Brooks, +1 555 3022',
@@ -272,6 +285,7 @@ export const initialData: AppData = {
   profiles,
   patients,
   therapySessions,
+  payments: buildLegacyPayments(therapySessions),
   expenses: [],
   equipment: [],
 };

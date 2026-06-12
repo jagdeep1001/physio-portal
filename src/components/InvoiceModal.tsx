@@ -1,6 +1,6 @@
 import { FileText, Printer, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import type { Clinic, Patient, Profile, TherapySession } from '../types';
+import type { Clinic, Patient, PaymentRecord, Profile, TherapySession } from '../types';
 import { sessionDateKey } from '../lib/datetime';
 import { formatTherapyTypeDisplay } from '../lib/therapy';
 import { InvoiceDocument } from './InvoiceDocument';
@@ -20,6 +20,7 @@ import {
 export interface InvoiceModalProps {
   patient: Patient;
   sessions: TherapySession[];
+  payments: PaymentRecord[];
   clinics: Clinic[];
   profiles: Profile[];
   initialMode?: InvoiceMode;
@@ -30,6 +31,7 @@ export interface InvoiceModalProps {
 export function InvoiceModal({
   patient,
   sessions,
+  payments,
   clinics,
   profiles,
   initialMode = 'period',
@@ -60,11 +62,11 @@ export function InvoiceModal({
 
   const invoice: Invoice | null = useMemo(() => {
     if (mode === 'period') {
-      return buildPeriodInvoice(patient, sessions, clinics, profiles, fromDate, toDate, notes);
+      return buildPeriodInvoice(patient, sessions, payments, clinics, profiles, fromDate, toDate, notes);
     }
     if (!selectedSession) return null;
-    return buildSessionInvoice(patient, selectedSession, sessions, clinics, profiles, notes);
-  }, [mode, patient, sessions, clinics, profiles, fromDate, toDate, notes, selectedSession]);
+    return buildSessionInvoice(patient, selectedSession, sessions, payments, clinics, profiles, notes);
+  }, [mode, patient, sessions, payments, clinics, profiles, fromDate, toDate, notes, selectedSession]);
 
   const handlePrint = () => {
     if (!invoice) return;
@@ -165,7 +167,7 @@ export function InvoiceModal({
 
           {!invoice ? (
             <div className="invoice-empty-state">
-              Complete sessions and record payment amounts first.
+              Complete sessions and set session fees first.
             </div>
           ) : (
             <div className="invoice-preview-wrap">

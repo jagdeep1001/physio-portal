@@ -1,12 +1,16 @@
 import type { Clinic, Patient, Profile, TherapySession } from '../types';
+import type { PaymentRecord } from '../types';
 import { sessionDateKey } from '../lib/datetime';
 import { formatTherapyTypeDisplay } from '../lib/therapy';
+import { paidForSession, patientCredit, sessionBalance, sessionFee } from './payments';
 
 export interface InvoiceLineItem {
   sessionId: string;
   date: string;
   description: string;
   amount: number;
+  paid: number;
+  balance: number;
 }
 
 export interface InvoiceClinicInfo {
@@ -23,6 +27,9 @@ export interface Invoice {
   period?: { from: string; to: string };
   lineItems: InvoiceLineItem[];
   subtotal: number;
+  paidTotal: number;
+  balanceDue: number;
+  credit: number;
   notes?: string;
 }
 
@@ -74,7 +81,7 @@ export function getBillableSessions(
 ): TherapySession[] {
   return sessions
     .filter((s) => s.patientId === patientId)
-    .filter((s) => s.status === 'completed' && s.amountCollected !== null)
+    .filter((s) => s.status === 'completed' && sessionFee(s) > 0)
     .filter((s) => {
       const date = sessionDateKey(s.scheduledAt);
       if (from && date < from) return false;
@@ -90,7 +97,7 @@ function therapyLevelLabel(level: TherapySession['therapyLevel']): string {
   return 'Basic';
 }
 
-export function sessionToLineItem(session: TherapySession, profiles: Profile[]): InvoiceLineItem {
+export function sessionToLineItem(session: TherapySession, profiles: Profile[], payments: PaymentRecord[]): InvoiceLineItem {
   const sessionType = session.sessionType === 'home' ? 'Home visit' : 'Clinic';
   const staff = profiles.find((p) => p.id === session.assignedStaffId);
   const staffPart = staff ? ` · ${staff.name}` : '';
@@ -101,7 +108,9 @@ export function sessionToLineItem(session: TherapySession, profiles: Profile[]):
     sessionId: session.id,
     date: formatInvoiceDate(sessionDateKey(session.scheduledAt)),
     description,
-    amount: session.amountCollected ?? 0,
+    amount: sessionFee(session),
+    paid: paidForSession(session.id, payments),
+    balance: sessionBalance(session, payments),
   };
 }
 
@@ -132,6 +141,7 @@ function buildInvoiceBase(
   patient: Patient,
   lineItems: InvoiceLineItem[],
   sessions: TherapySession[],
+  payments: PaymentRecord[],
   clinics: Clinic[],
   notes?: string,
   period?: { from: string; to: string }
@@ -139,6 +149,7 @@ function buildInvoiceBase(
   if (lineItems.length === 0) return null;
 
   const subtotal = lineItems.reduce((sum, item) => sum + item.amount, 0);
+  const paidTotal = lineItems.reduce((sum, item) => sum + item.paid, 0);
 
   return {
     invoiceNumber: generateInvoiceNumber(),
@@ -152,6 +163,9 @@ function buildInvoiceBase(
     period,
     lineItems,
     subtotal,
+    paidTotal,
+    balanceDue: Math.max(0, subtotal - paidTotal),
+    credit: patientCredit(patient.id, payments),
     notes: notes?.trim() || undefined,
   };
 }
@@ -159,6 +173,7 @@ function buildInvoiceBase(
 export function buildPeriodInvoice(
   patient: Patient,
   sessions: TherapySession[],
+  payments: PaymentRecord[],
   clinics: Clinic[],
   profiles: Profile[],
   from: string,
@@ -166,11 +181,12 @@ export function buildPeriodInvoice(
   notes?: string
 ): Invoice | null {
   const billable = getBillableSessions(sessions, patient.id, from, to);
-  const lineItems = billable.map((s) => sessionToLineItem(s, profiles));
+  const lineItems = billable.map((s) => sessionToLineItem(s, profiles, payments));
   return buildInvoiceBase(
     patient,
     lineItems,
     billable,
+    payments,
     clinics,
     notes,
     { from, to }
@@ -181,13 +197,14 @@ export function buildSessionInvoice(
   patient: Patient,
   session: TherapySession,
   sessions: TherapySession[],
+  payments: PaymentRecord[],
   clinics: Clinic[],
   profiles: Profile[],
   notes?: string
 ): Invoice | null {
-  if (session.status !== 'completed' || session.amountCollected === null) return null;
-  const lineItems = [sessionToLineItem(session, profiles)];
-  return buildInvoiceBase(patient, lineItems, [session], clinics, notes);
+  if (session.status !== 'completed' || sessionFee(session) <= 0) return null;
+  const lineItems = [sessionToLineItem(session, profiles, payments)];
+  return buildInvoiceBase(patient, lineItems, [session], payments, clinics, notes);
 }
 
 function escapeHtml(value: string): string {
@@ -211,6 +228,8 @@ export function renderInvoiceHtml(invoice: Invoice): string {
           <td>${escapeHtml(item.date)}</td>
           <td>${escapeHtml(item.description)}</td>
           <td class="amount">${escapeHtml(formatInvoiceCurrency(item.amount))}</td>
+          <td class="amount">${escapeHtml(formatInvoiceCurrency(item.paid))}</td>
+          <td class="amount">${escapeHtml(formatInvoiceCurrency(item.balance))}</td>
         </tr>`
     )
     .join('');
@@ -262,7 +281,7 @@ export function renderInvoiceHtml(invoice: Invoice): string {
       border-bottom: 2px solid #e2e8f0;
       padding: 10px 8px;
     }
-    th:last-child, td.amount { text-align: right; }
+    th.amount, td.amount { text-align: right; }
     td { padding: 12px 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; vertical-align: top; }
     .totals { display: flex; justify-content: flex-end; margin-bottom: 24px; }
     .totals-box {
@@ -272,7 +291,7 @@ export function renderInvoiceHtml(invoice: Invoice): string {
       padding: 14px 16px;
       background: #f8fafc;
     }
-    .totals-row { display: flex; justify-content: space-between; gap: 24px; font-size: 14px; }
+    .totals-row { display: flex; justify-content: space-between; gap: 24px; font-size: 14px; margin-bottom: 8px; }
     .totals-row strong { font-size: 18px; color: #0a7a6d; }
     .invoice-notes { margin-bottom: 20px; font-size: 13px; color: #475569; }
     .invoice-notes p { margin: 6px 0 0; }
@@ -319,7 +338,9 @@ export function renderInvoiceHtml(invoice: Invoice): string {
       <tr>
         <th>Date</th>
         <th>Description</th>
-        <th>Amount</th>
+        <th class="amount">Charge</th>
+        <th class="amount">Paid</th>
+        <th class="amount">Balance</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -330,6 +351,18 @@ export function renderInvoiceHtml(invoice: Invoice): string {
       <div class="totals-row">
         <span>Subtotal</span>
         <strong>${escapeHtml(formatInvoiceCurrency(invoice.subtotal))}</strong>
+      </div>
+      <div class="totals-row">
+        <span>Paid</span>
+        <strong>${escapeHtml(formatInvoiceCurrency(invoice.paidTotal))}</strong>
+      </div>
+      <div class="totals-row">
+        <span>Balance due</span>
+        <strong>${escapeHtml(formatInvoiceCurrency(invoice.balanceDue))}</strong>
+      </div>
+      <div class="totals-row">
+        <span>Available credit</span>
+        <strong>${escapeHtml(formatInvoiceCurrency(invoice.credit))}</strong>
       </div>
     </div>
   </div>

@@ -67,6 +67,9 @@ create table if not exists patients (
   notes              text not null default '',
   signs              text not null default '',
   symptoms           text not null default '',
+  patient_history    text not null default '',
+  case_type          text not null default '',
+  condition          text not null default '',
   complications      text not null default '',
   surgeries          text not null default '',
   active             boolean not null default true,
@@ -91,17 +94,30 @@ create table if not exists therapy_sessions (
   amount_collected  numeric(10,2)
 );
 
+create table if not exists patient_payments (
+  id          uuid primary key default gen_random_uuid(),
+  patient_id  uuid not null references patients(id) on delete cascade,
+  clinic_id   uuid references clinics(id) on delete set null,
+  paid_at     timestamptz not null,
+  amount      numeric(12, 2) not null default 0,
+  method      text not null default 'Cash',
+  notes       text not null default '',
+  allocations jsonb not null default '[]',
+  created_at  timestamptz not null default now()
+);
+
 -- ── Row-Level Security ─────────────────────────────────────
 alter table clinics          enable row level security;
 alter table profiles         enable row level security;
 alter table patients         enable row level security;
 alter table therapy_sessions enable row level security;
+alter table patient_payments enable row level security;
 
 -- Drop & recreate policies (safe re-run)
 do $$ declare r record;
 begin
   for r in select policyname, tablename from pg_policies
-           where tablename in ('clinics','profiles','patients','therapy_sessions')
+           where tablename in ('clinics','profiles','patients','therapy_sessions','patient_payments')
   loop
     execute format('drop policy if exists %I on %I', r.policyname, r.tablename);
   end loop;
@@ -111,12 +127,15 @@ create policy "allow_all_clinics"          on clinics          for all using (tr
 create policy "allow_all_profiles"         on profiles         for all using (true) with check (true);
 create policy "allow_all_patients"         on patients         for all using (true) with check (true);
 create policy "allow_all_therapy_sessions" on therapy_sessions for all using (true) with check (true);
+create policy "allow_all_patient_payments" on patient_payments for all using (true) with check (true);
 
 -- ── Indexes ────────────────────────────────────────────────
 create index if not exists idx_patients_clinic    on patients(clinic_id);
 create index if not exists idx_sessions_patient   on therapy_sessions(patient_id);
 create index if not exists idx_sessions_clinic    on therapy_sessions(clinic_id);
 create index if not exists idx_sessions_scheduled on therapy_sessions(scheduled_at);
+create index if not exists idx_patient_payments_patient on patient_payments(patient_id);
+create index if not exists idx_patient_payments_paid_at on patient_payments(paid_at);
 create index if not exists idx_profiles_clinic    on profiles(clinic_id);
 
 -- ── Seed: initial admin account ────────────────────────────
@@ -138,6 +157,9 @@ on conflict (email) do nothing;
 -- ── Add signs/symptoms columns to existing DB (safe, idempotent) ────────────
 alter table patients add column if not exists signs     text not null default '';
 alter table patients add column if not exists symptoms  text not null default '';
+alter table patients add column if not exists patient_history text not null default '';
+alter table patients add column if not exists case_type       text not null default '';
+alter table patients add column if not exists condition       text not null default '';
 
 -- ── Allow home-visit patients/sessions without clinic assignment ────────────
 alter table patients alter column clinic_id drop not null;
@@ -163,11 +185,20 @@ create table if not exists equipment (
   category       text not null,
   purchase_date  date,
   purchase_cost  numeric(12, 2),
+  quantity       numeric(12, 2) not null default 1,
+  unit_price     numeric(12, 2),
+  minimum_quantity numeric(12, 2) not null default 0,
+  details        text not null default '',
   condition      text not null default 'Good',
   serial_number  text not null default '',
   notes          text not null default '',
   created_at     timestamptz not null default now()
 );
+
+alter table equipment add column if not exists quantity numeric(12, 2) not null default 1;
+alter table equipment add column if not exists unit_price numeric(12, 2);
+alter table equipment add column if not exists minimum_quantity numeric(12, 2) not null default 0;
+alter table equipment add column if not exists details text not null default '';
 
 -- ── RLS for expenses & equipment ───────────────────────────────────────────
 alter table clinic_expenses enable row level security;

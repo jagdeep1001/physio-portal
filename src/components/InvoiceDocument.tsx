@@ -37,7 +37,9 @@ export function InvoiceDocument({ invoice }: { invoice: Invoice }) {
           <tr>
             <th>Date</th>
             <th>Description</th>
-            <th>Amount</th>
+            <th>Charge</th>
+            <th>Paid</th>
+            <th>Balance</th>
           </tr>
         </thead>
         <tbody>
@@ -46,6 +48,8 @@ export function InvoiceDocument({ invoice }: { invoice: Invoice }) {
               <td>{item.date}</td>
               <td>{item.description}</td>
               <td className="invoice-doc-amount">{formatInvoiceCurrency(item.amount)}</td>
+              <td className="invoice-doc-amount">{formatInvoiceCurrency(item.paid)}</td>
+              <td className="invoice-doc-amount">{formatInvoiceCurrency(item.balance)}</td>
             </tr>
           ))}
         </tbody>
@@ -53,8 +57,10 @@ export function InvoiceDocument({ invoice }: { invoice: Invoice }) {
 
       <div className="invoice-doc-totals">
         <div className="invoice-doc-totals-box">
-          <span>Subtotal</span>
-          <strong>{formatInvoiceCurrency(invoice.subtotal)}</strong>
+          <div><span>Subtotal</span><strong>{formatInvoiceCurrency(invoice.subtotal)}</strong></div>
+          <div><span>Paid</span><strong>{formatInvoiceCurrency(invoice.paidTotal)}</strong></div>
+          <div><span>Balance due</span><strong>{formatInvoiceCurrency(invoice.balanceDue)}</strong></div>
+          <div><span>Available credit</span><strong>{formatInvoiceCurrency(invoice.credit)}</strong></div>
         </div>
       </div>
 

@@ -17,6 +17,7 @@ import {
   Lock,
   LogOut,
   MapPin,
+  Minus,
   Phone,
   Plus,
   Receipt,
@@ -46,6 +47,7 @@ import {
   loginWithProfiles,
   supabase,
   toPatientRow,
+  toPaymentRow,
   toProfileRow,
   toTherapySessionRow,
   updateClinicExpenseRecord,
@@ -62,6 +64,20 @@ import {
 import { InvoiceModal } from './components/InvoiceModal';
 import type { InvoiceMode } from './lib/invoice';
 import { formatTherapyTypeDisplay, splitTherapyTypes, THERAPY_GROUPS, THERAPY_SEPARATOR } from './lib/therapy';
+import {
+  allocatePatientCredit,
+  buildLegacyPayments,
+  normalizeMoney,
+  patientCredit,
+  patientDue,
+  paidForSession,
+  PAYMENT_METHODS,
+  paymentStatusLabel,
+  sessionBalance,
+  sessionFee,
+  sessionPaymentStatus,
+  withLegacyPayments,
+} from './lib/payments';
 import {
   buildLocalDateTime,
   CLINIC_VISIT_SLOTS,
@@ -100,6 +116,8 @@ import type {
   HomeSessionRecord,
   Patient,
   PatientReport,
+  PaymentMethod,
+  PaymentRecord,
   Profile,
   Role,
   SessionStatus,
@@ -129,6 +147,16 @@ type ClinicDraft = Omit<Clinic, 'id' | 'active'>;
 
 const storageKey = 'physio-care-demo-data';
 const todayStr = localTodayStr();
+const CASE_OPTIONS = [
+  'Post-operative rehab',
+  'Sports injury',
+  'Neurological rehab',
+  'Chronic pain',
+  'Geriatric mobility',
+  'Pediatric physiotherapy',
+  'Posture correction',
+  'Home care',
+];
 
 const emptyHomeVisitDetails = (): HomeVisitDetails => ({
   caregiverName: '',
@@ -150,6 +178,9 @@ const emptyPatient = (clinicId: string | null): PatientDraft => ({
   address: '',
   signs: '',
   symptoms: '',
+  patientHistory: '',
+  caseType: '',
+  condition: '',
   diagnosis: '',
   referralSource: '',
   emergencyContact: '',
@@ -170,6 +201,13 @@ function loadInitialData(): AppData {
     // strip legacy visits if present, patch missing fields
     const { visits: _v, ...rest } = parsed as typeof parsed & { visits?: unknown[] };
     void _v;
+    const therapySessions = (rest.therapySessions ?? []).map((s) => ({
+      ...s,
+      sessionType: (s as TherapySession).sessionType ?? ('clinic' as SessionType),
+      therapyLevel: (s as TherapySession).therapyLevel ?? ('basic' as TherapyLevel),
+      treatmentNotes: (s as TherapySession).treatmentNotes ?? '',
+      amountCollected: (s as TherapySession).amountCollected ?? null,
+    }));
     return {
       ...rest,
       patients: (rest.patients ?? []).map((p) => {
@@ -179,6 +217,9 @@ function loadInitialData(): AppData {
           reports: (p as Patient).reports ?? [],
           signs:         (p as Patient).signs         ?? '',
           symptoms:      (p as Patient).symptoms      ?? '',
+          patientHistory: (p as Patient).patientHistory ?? '',
+          caseType:      (p as Patient).caseType      ?? '',
+          condition:     (p as Patient).condition     ?? (hvd?.condition ?? ''),
           complications: (p as Patient).complications ?? '',
           surgeries:     (p as Patient).surgeries     ?? '',
           homeVisitDetails: hvd
@@ -186,15 +227,10 @@ function loadInitialData(): AppData {
             : undefined,
         };
       }),
-      therapySessions: (rest.therapySessions ?? []).map((s) => ({
-        ...s,
-        sessionType: (s as TherapySession).sessionType ?? ('clinic' as SessionType),
-        therapyLevel: (s as TherapySession).therapyLevel ?? ('basic' as TherapyLevel),
-        treatmentNotes: (s as TherapySession).treatmentNotes ?? '',
-        amountCollected: (s as TherapySession).amountCollected ?? null,
-      })),
+      therapySessions,
+      payments: withLegacyPayments(therapySessions, (rest.payments ?? []) as PaymentRecord[]),
       expenses:  (rest.expenses  ?? []) as ClinicExpense[],
-      equipment: (rest.equipment ?? []) as Equipment[],
+      equipment: ((rest.equipment ?? []) as Equipment[]).map(normalizeEquipment),
     };
   } catch {
     return initialData;
@@ -207,6 +243,46 @@ function saveData(data: AppData) {
 
 function createId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function normalizeEquipment(item: Equipment): Equipment {
+  const legacyCost = item.purchaseCost ?? null;
+  const rawQuantity = Number(item.quantity ?? 1);
+  const rawMinimumQuantity = Number(item.minimumQuantity ?? 0);
+  const rawUnitPrice = item.unitPrice ?? legacyCost;
+  const quantity = Number.isFinite(rawQuantity) && rawQuantity >= 0 ? rawQuantity : 1;
+  const unitPrice = rawUnitPrice != null && Number.isFinite(Number(rawUnitPrice)) ? Number(rawUnitPrice) : null;
+  return {
+    ...item,
+    purchaseCost: item.purchaseCost ?? (unitPrice != null ? quantity * unitPrice : null),
+    quantity,
+    unitPrice,
+    minimumQuantity: Number.isFinite(rawMinimumQuantity) && rawMinimumQuantity >= 0 ? rawMinimumQuantity : 0,
+    details: item.details ?? '',
+    serialNumber: item.serialNumber ?? '',
+    notes: item.notes ?? '',
+  };
+}
+
+function normalizeEquipmentInput(item: Omit<Equipment, 'id'>): Omit<Equipment, 'id'> {
+  const normalized = normalizeEquipment({ ...item, id: '__draft__' });
+  const totalValue = equipmentTotalValue(normalized);
+  const { id: _id, ...rest } = normalized;
+  void _id;
+  return {
+    ...rest,
+    purchaseCost: totalValue > 0 ? totalValue : null,
+  };
+}
+
+function equipmentTotalValue(item: Pick<Equipment, 'quantity' | 'unitPrice' | 'purchaseCost'>) {
+  const quantity = Number(item.quantity ?? 1);
+  const unitPrice = item.unitPrice ?? item.purchaseCost ?? 0;
+  return Math.max(0, Number.isFinite(quantity) ? quantity : 1) * Math.max(0, Number(unitPrice) || 0);
+}
+
+function isLowStockEquipment(item: Equipment) {
+  return (item.minimumQuantity ?? 0) > 0 && (item.quantity ?? 0) <= item.minimumQuantity;
 }
 
 function createDbId() {
@@ -271,13 +347,14 @@ export function App() {
   const refreshRemoteData = async (userId?: string) => {
     if (!supabase) return null;
     const remote = await loadRemoteData();
-    setData(remote);
+    const normalizedRemote = { ...remote, equipment: remote.equipment.map(normalizeEquipment) };
+    setData(normalizedRemote);
     const targetUserId = userId ?? currentUser?.id ?? localStorage.getItem(SESSION_USER_KEY);
     if (targetUserId) {
-      const refreshedUser = remote.profiles.find((p) => p.id === targetUserId);
+      const refreshedUser = normalizedRemote.profiles.find((p) => p.id === targetUserId);
       if (refreshedUser) setCurrentUser(refreshedUser);
     }
-    return remote;
+    return normalizedRemote;
   };
 
   const reportRemoteError = (error: unknown) => {
@@ -298,9 +375,10 @@ export function App() {
         // Fetch fresh data, then look up saved user in remote profiles
         try {
           const remote = await loadRemoteData();
-          setData(remote);
+          const normalizedRemote = { ...remote, equipment: remote.equipment.map(normalizeEquipment) };
+          setData(normalizedRemote);
           if (savedId) {
-            const user = remote.profiles.find((p) => p.id === savedId);
+            const user = normalizedRemote.profiles.find((p) => p.id === savedId);
             if (user && user.status === 'active') {
               setCurrentUser(user);
               setPage(user.role === 'admin' ? 'dashboard' : 'sessions');
@@ -385,6 +463,7 @@ export function App() {
           : data.profiles.filter((p) => !p.clinicId || visibleClinicIds.includes(p.clinicId)),
       patients: data.patients.filter((p) => p.clinicId === null || visibleClinicIds.includes(p.clinicId)),
       therapySessions: data.therapySessions.filter((s) => s.clinicId === null || visibleClinicIds.includes(s.clinicId)),
+      payments: data.payments,
     };
   }, [currentUser?.role, data, visibleClinicIds]);
 
@@ -527,6 +606,7 @@ export function App() {
       ...draftData,
       patients: draftData.patients.filter((p) => p.id !== patientId),
       therapySessions: draftData.therapySessions.filter((s) => s.patientId !== patientId),
+      payments: draftData.payments.filter((payment) => payment.patientId !== patientId),
     }));
     setSelectedPatientId('');
     setPage('patients');
@@ -574,6 +654,120 @@ export function App() {
     }));
   };
 
+  const savePatientPayments = async (patientId: string, payments: PaymentRecord[]) => {
+    const patientPayments = payments.filter((payment) => payment.patientId === patientId);
+    if (supabase) {
+      for (const payment of patientPayments.filter((payment) => !payment.id.startsWith('legacy-payment-'))) {
+        const { id, ...rest } = payment;
+        const upsert = await supabase.from('patient_payments').upsert({ ...toPaymentRow(rest), id });
+        if (upsert.error) throw upsert.error;
+      }
+      return;
+    }
+  };
+
+  const removePaymentAllocations = async (sessionIds: string[]) => {
+    const idSet = new Set(sessionIds);
+    const touched = data.payments
+      .filter((payment) => payment.allocations.some((allocation) => idSet.has(allocation.sessionId)))
+      .map((payment) => ({
+        ...payment,
+        allocations: payment.allocations.filter((allocation) => !idSet.has(allocation.sessionId)),
+      }));
+    if (supabase) {
+      for (const payment of touched.filter((payment) => !payment.id.startsWith('legacy-payment-'))) {
+        const { id, ...rest } = payment;
+        const update = await supabase.from('patient_payments').update(toPaymentRow(rest)).eq('id', id);
+        if (update.error) throw update.error;
+      }
+    }
+  };
+
+  const recordPayment = async (payment: Omit<PaymentRecord, 'id' | 'createdAt' | 'allocations'>) => {
+    const created: PaymentRecord = {
+      ...payment,
+      amount: normalizeMoney(payment.amount),
+      id: createDbId(),
+      createdAt: new Date().toISOString(),
+      allocations: [],
+    };
+    const nextPayments = allocatePatientCredit(payment.patientId, data.therapySessions, [...data.payments, created]);
+
+    if (supabase) {
+      try {
+        await savePatientPayments(payment.patientId, nextPayments);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); }
+      return;
+    }
+
+    persist((draftData) => ({
+      ...draftData,
+      payments: allocatePatientCredit(payment.patientId, draftData.therapySessions, [...draftData.payments, created]),
+    }));
+  };
+
+  const completeSession = async (
+    sessionId: string,
+    updates: Partial<TherapySession>,
+    paymentReceived: number | null,
+  ) => {
+    const session = data.therapySessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const completedSession = { ...session, ...updates } as TherapySession;
+    const normalizedReceived = normalizeMoney(paymentReceived);
+    const createdPayment: PaymentRecord | null = normalizedReceived > 0
+      ? {
+          id: createDbId(),
+          patientId: session.patientId,
+          clinicId: session.clinicId,
+          paidAt: new Date().toISOString(),
+          amount: normalizedReceived,
+          method: 'Cash',
+          notes: 'Payment received at completion',
+          allocations: [],
+          createdAt: new Date().toISOString(),
+        }
+      : null;
+    const nextSessions = data.therapySessions.map((s) => (s.id === sessionId ? completedSession : s));
+    const nextPayments = allocatePatientCredit(
+      session.patientId,
+      nextSessions,
+      createdPayment ? [...data.payments, createdPayment] : data.payments
+    );
+
+    if (supabase) {
+      try {
+        const row: Record<string, unknown> = {};
+        if ('status' in updates)        row.status           = updates.status;
+        if ('completedAt' in updates)   row.completed_at     = updates.completedAt;
+        if ('amountCollected' in updates) row.amount_collected = updates.amountCollected;
+        if ('treatmentNotes' in updates) row.treatment_notes  = updates.treatmentNotes;
+        if ('therapyType' in updates)   row.therapy_type     = updates.therapyType;
+        const update = await supabase.from('therapy_sessions').update(row).eq('id', sessionId);
+        if (update.error) throw update.error;
+        await savePatientPayments(session.patientId, nextPayments);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); }
+      return;
+    }
+
+    persist((draftData) => {
+      const draftSessions = draftData.therapySessions.map((s) =>
+        s.id === sessionId ? { ...s, ...updates } : s
+      );
+      return {
+        ...draftData,
+        therapySessions: draftSessions,
+        payments: allocatePatientCredit(
+          session.patientId,
+          draftSessions,
+          createdPayment ? [...draftData.payments, createdPayment] : draftData.payments
+        ),
+      };
+    });
+  };
+
   const bulkUpdateSessions = async (items: { sessionId: string; updates: Partial<TherapySession> }[]) => {
     if (items.length === 0) return;
     if (supabase) {
@@ -617,6 +811,7 @@ export function App() {
     if (!window.confirm(`Delete scheduled ${visitLabel} on ${when}? This cannot be undone.`)) return;
     if (supabase) {
       try {
+        await removePaymentAllocations([sessionId]);
         const d = await supabase.from('therapy_sessions').delete().eq('id', sessionId);
         if (d.error) throw d.error;
         await refreshRemoteData(); setSystemNotice('');
@@ -626,6 +821,10 @@ export function App() {
     persist((draftData) => ({
       ...draftData,
       therapySessions: draftData.therapySessions.filter((s) => s.id !== sessionId),
+      payments: draftData.payments.map((payment) => ({
+        ...payment,
+        allocations: payment.allocations.filter((allocation) => allocation.sessionId !== sessionId),
+      })),
     }));
   };
 
@@ -637,6 +836,7 @@ export function App() {
     if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
     if (supabase) {
       try {
+        await removePaymentAllocations(sessionIds);
         const d = await supabase.from('therapy_sessions').delete().in('id', sessionIds);
         if (d.error) throw d.error;
         await refreshRemoteData(); setSystemNotice('');
@@ -647,6 +847,10 @@ export function App() {
     persist((draftData) => ({
       ...draftData,
       therapySessions: draftData.therapySessions.filter((s) => !idSet.has(s.id)),
+      payments: draftData.payments.map((payment) => ({
+        ...payment,
+        allocations: payment.allocations.filter((allocation) => !idSet.has(allocation.sessionId)),
+      })),
     }));
   };
 
@@ -843,24 +1047,26 @@ export function App() {
 
   // ── Equipment CRUD ──
   const addEquipment = async (item: Omit<Equipment, 'id'>) => {
+    const normalizedItem = normalizeEquipmentInput(item);
     if (supabase) {
       try {
-        await insertEquipmentRecord(item, createDbId());
+        await insertEquipmentRecord(normalizedItem, createDbId());
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); throw error; }
       return;
     }
-    persist((d) => ({ ...d, equipment: [...(d.equipment ?? []), { ...item, id: createId('equip') }] }));
+    persist((d) => ({ ...d, equipment: [...(d.equipment ?? []), { ...normalizedItem, id: createId('equip') }] }));
   };
   const updateEquipment = async (item: Equipment) => {
+    const normalizedItem = { ...normalizeEquipmentInput(item), id: item.id };
     if (supabase) {
       try {
-        await updateEquipmentRecord(item);
+        await updateEquipmentRecord(normalizedItem);
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); throw error; }
       return;
     }
-    persist((d) => ({ ...d, equipment: (d.equipment ?? []).map((e) => (e.id === item.id ? item : e)) }));
+    persist((d) => ({ ...d, equipment: (d.equipment ?? []).map((e) => (e.id === item.id ? normalizedItem : e)) }));
   };
   const deleteEquipment = async (id: string) => {
     if (!window.confirm('Delete this equipment record?')) return;
@@ -909,6 +1115,7 @@ export function App() {
     { page: 'staff', label: 'Staff', icon: UserCheck, adminOnly: true },
     { page: 'expenses', label: 'Expenses & Equipment', icon: Receipt, adminOnly: true },
   ];
+  const lowStockEquipmentCount = (data.equipment ?? []).map(normalizeEquipment).filter(isLowStockEquipment).length;
 
   const goToPatientDetail = (patientId: string) => {
     setSelectedPatientId(patientId);
@@ -948,6 +1155,9 @@ export function App() {
                 >
                   <Icon size={18} />
                   <span>{item.label}</span>
+                  {item.page === 'expenses' && lowStockEquipmentCount > 0 && (
+                    <span className="nav-alert-dot" title={`${lowStockEquipmentCount} low-stock item${lowStockEquipmentCount === 1 ? '' : 's'}`} />
+                  )}
                 </button>
               );
             })}
@@ -1022,6 +1232,7 @@ export function App() {
             onDeletePatient={deletePatient}
             onSyncHomeVisitLog={syncHomeVisitLog}
             onUpdateSession={updateSession}
+            onRecordPayment={recordPayment}
             onDeleteSession={deleteSession}
             onBack={() => setPage('patients')}
             onGoToAddPatient={() => setPage('patientEntry')}
@@ -1034,6 +1245,7 @@ export function App() {
             allClinics={data.clinics}
             profiles={scoped.profiles}
             onUpdateSession={updateSession}
+            onCompleteSession={completeSession}
             onBulkUpdateSessions={bulkUpdateSessions}
             onBulkDeleteSessions={bulkDeleteSessions}
             onChangeStatus={changeSessionStatus}
@@ -1049,6 +1261,7 @@ export function App() {
             preset={schedulePreset}
             onAddSession={addSession}
             onUpdateSession={updateSession}
+            onCompleteSession={completeSession}
             onBulkUpdateSessions={bulkUpdateSessions}
             onBulkDeleteSessions={bulkDeleteSessions}
             onChangeStatus={changeSessionStatus}
@@ -1214,10 +1427,10 @@ function Dashboard({
   // ── KPI numbers ──
   const completedSess    = allSessions.filter((s) => s.status === 'completed').length;
   const scheduledSess    = allSessions.filter((s) => s.status === 'scheduled').length;
-  // Actual revenue — only completed sessions with a recorded payment
-  const actualRevenue    = allSessions
-    .filter((s) => s.status === 'completed' && s.amountCollected !== null)
-    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const visiblePaymentPatientIds = new Set(allSessions.map((s) => s.patientId));
+  const visiblePayments = allData.payments.filter((payment) => visiblePaymentPatientIds.has(payment.patientId));
+  // Actual revenue — money actually recorded in the payment ledger
+  const actualRevenue = visiblePayments.reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0);
   // Estimated revenue — scheduled sessions where an expected amount was pre-recorded
   const estimatedRevenue = allSessions
     .filter((s) => s.status === 'scheduled' && s.amountCollected !== null)
@@ -1245,9 +1458,9 @@ function Dashboard({
   // ── Revenue last 7 days ──
   const weeklyRevenue = weekDays.map((dateStr) => ({
     dateStr,
-    amount: allSessions
-      .filter((s) => s.status === 'completed' && s.amountCollected !== null && sessionOnDate(s.scheduledAt, dateStr))
-      .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0),
+    amount: visiblePayments
+      .filter((payment) => sessionOnDate(payment.paidAt, dateStr))
+      .reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0),
   }));
   const maxRevenue = Math.max(...weeklyRevenue.map((d) => d.amount), 1);
 
@@ -1255,9 +1468,9 @@ function Dashboard({
   const thisMonth = today.slice(0, 7);
   const revenueClinics = data.clinics.filter((clinic) => clinicFilter === 'all' || clinic.id === clinicFilter);
   const clinicRevenue = revenueClinics.map((clinic) => {
-    const amount = allSessions
-      .filter((s) => s.clinicId === clinic.id && s.status === 'completed' && s.amountCollected !== null && sessionInMonth(s.scheduledAt, thisMonth))
-      .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+    const amount = visiblePayments
+      .filter((payment) => payment.clinicId === clinic.id && sessionInMonth(payment.paidAt, thisMonth))
+      .reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0);
     const count = allSessions.filter((s) => s.clinicId === clinic.id && sessionInMonth(s.scheduledAt, thisMonth)).length;
     return { clinic, amount, count };
   });
@@ -1275,11 +1488,11 @@ function Dashboard({
   const expensesThisYear = filteredExpenses
     .filter((e) => e.date.startsWith(thisYear))
     .reduce((sum, e) => sum + e.amount, 0);
-  const monthRevenue = allSessions
-    .filter((s) => s.status === 'completed' && s.amountCollected !== null && sessionInMonth(s.scheduledAt, thisMonth))
-    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const monthRevenue = visiblePayments
+    .filter((payment) => sessionInMonth(payment.paidAt, thisMonth))
+    .reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0);
   const netThisMonth = monthRevenue - expensesThisMonth;
-  const expenseCategories: ExpenseCategory[] = ['Rent', 'Utilities', 'Salaries', 'Supplies', 'Maintenance', 'Other'];
+  const expenseCategories: ExpenseCategory[] = ['Rent', 'Electricity', 'Cleaning', 'Salaries', 'Maintenance', 'Other'];
   const expensesByCategory = expenseCategories
     .map((cat) => ({
       cat,
@@ -1587,7 +1800,7 @@ function Dashboard({
                     <span className={`compact-type-dot ${session.sessionType}`} />
                     <div className="compact-info">
                       <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
-                      <small>{patient?.name ?? '—'} · {formatDateTime(session.scheduledAt)}</small>
+                      <small>{patient?.name ?? '—'}{patient?.gender ? ` · ${patient.gender}` : ''} · {formatDateTime(session.scheduledAt)}</small>
                     </div>
                     <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
                   </div>
@@ -1609,8 +1822,8 @@ function Dashboard({
                   <button key={patient.id} className="compact-row clickable" onClick={() => onOpenPatient(patient.id)}>
                     <span className="compact-avatar">{patient.name.charAt(0)}</span>
                     <div className="compact-info">
-                      <strong>{patient.name}</strong>
-                      <small>{patient.diagnosis.slice(0, 40)}{patient.diagnosis.length > 40 ? '…' : ''}</small>
+                      <strong>{patient.name} <span className="patient-gender-chip">{patient.gender}</span></strong>
+                      <small>{patientCaseSummary(patient).slice(0, 40)}{patientCaseSummary(patient).length > 40 ? '…' : ''}</small>
                     </div>
                     <span className="compact-count">{sessCount} sess.</span>
                   </button>
@@ -1712,7 +1925,7 @@ function DonutChart({
 function HomeDashboard({
   data, onOpenPatient,
 }: {
-  data: Pick<AppData, 'patients' | 'therapySessions' | 'clinics'>;
+  data: Pick<AppData, 'patients' | 'therapySessions' | 'clinics' | 'payments'>;
   onOpenPatient: (id: string) => void;
 }) {
   const today = todayStr;
@@ -1726,9 +1939,10 @@ function HomeDashboard({
     .filter((s) => s.scheduledAt >= today)
     .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))
     .slice(0, 6);
-  const revenue = completed
-    .filter((s) => s.amountCollected !== null)
-    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const homePatientSet = new Set(homeSessions.map((s) => s.patientId));
+  const revenue = data.payments
+    .filter((payment) => homePatientSet.has(payment.patientId))
+    .reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0);
   const estimatedRevenue = scheduled
     .filter((s) => s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
@@ -1809,7 +2023,7 @@ function HomeDashboard({
                   <button key={session.id} className="compact-row clickable" onClick={() => patient && onOpenPatient(patient.id)}>
                     <span className="compact-type-dot home" />
                     <div className="compact-info">
-                      <strong>{patient?.name ?? 'Unknown patient'}</strong>
+                      <strong>{patient?.name ?? 'Unknown patient'} {patient?.gender && <span className="patient-gender-chip">{patient.gender}</span>}</strong>
                       <small>{formatDateTime(session.scheduledAt)} · {formatTherapyTypeDisplay(session.therapyType)}</small>
                     </div>
                     <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
@@ -1830,7 +2044,7 @@ function HomeDashboard({
                 <button key={patient.id} className="compact-row clickable" onClick={() => onOpenPatient(patient.id)}>
                   <span className="compact-avatar">{patient.name.charAt(0)}</span>
                   <div className="compact-info">
-                    <strong>{patient.name}</strong>
+                    <strong>{patient.name} <span className="patient-gender-chip">{patient.gender}</span></strong>
                     <small>{next ? `Next ${formatDateTime(next.scheduledAt)}` : 'No upcoming visit'} · {lastDone ? `Last ${formatDate(lastDone.scheduledAt)}` : 'No completed visit'}</small>
                   </div>
                   <span className="compact-count">{count} visits</span>
@@ -1863,7 +2077,7 @@ function PatientsView({
       if (clinicFilter === 'home') return isHomeOnlyPatient(p);
       return p.clinicId === clinicFilter;
     })
-    .filter((p) => [p.name, p.phone, p.diagnosis].join(' ').toLowerCase().includes(query.toLowerCase()));
+    .filter((p) => [p.name, p.phone, p.caseType, p.condition, p.diagnosis, p.patientHistory].join(' ').toLowerCase().includes(query.toLowerCase()));
 
   return (
     <section className="panel">
@@ -1903,9 +2117,10 @@ function PatientsView({
                 <span>
                   <strong className="patient-name-row">
                     {patient.name}
+                    <span className="patient-gender-chip">{patient.gender}</span>
                     {homeOnly && <span className="home-badge-sm" title="Home only patient"><Home size={10} /></span>}
                   </strong>
-                  <small>{patient.diagnosis}</small>
+                  <small>{patientCaseSummary(patient)}</small>
                 </span>
                 <span>
                   {homeOnly ? (
@@ -1985,9 +2200,9 @@ type HomeVisitSync =
 function PatientDetailView({
   data, allClinics, staff, currentUser, defaultClinicId,
   patientId, onSavePatient, onDeletePatient, onSyncHomeVisitLog, onUpdateSession, onDeleteSession,
-  onBack, onGoToAddPatient, onScheduleSession,
+  onRecordPayment, onBack, onGoToAddPatient, onScheduleSession,
 }: {
-  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
+  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions' | 'payments'>;
   allClinics: Clinic[];
   staff: Profile[];
   currentUser: Profile;
@@ -1998,6 +2213,7 @@ function PatientDetailView({
   onSyncHomeVisitLog: (patientId: string, updatedPatient: PatientDraft, sync: HomeVisitSync) => void;
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
   onDeleteSession: (sessionId: string) => void;
+  onRecordPayment: (payment: Omit<PaymentRecord, 'id' | 'createdAt' | 'allocations'>) => void;
   onBack: () => void;
   onGoToAddPatient: () => void;
   onScheduleSession: (patientId: string, sessionType: SessionType) => void;
@@ -2008,6 +2224,12 @@ function PatientDetailView({
   const [showInvoice, setShowInvoice] = useState(false);
   const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
   const [draft, setDraft] = useState<PatientDraft>(() => emptyPatient(defaultClinicId));
+  const [paymentDraft, setPaymentDraft] = useState({
+    amount: '',
+    paidAt: todayStr,
+    method: 'Cash' as PaymentMethod,
+    notes: '',
+  });
 
   useEffect(() => {
     if (!patient) return;
@@ -2020,6 +2242,9 @@ function PatientDetailView({
       address: patient.address,
       signs: patient.signs ?? '',
       symptoms: patient.symptoms ?? '',
+      patientHistory: patient.patientHistory ?? '',
+      caseType: patient.caseType ?? '',
+      condition: patient.condition ?? patient.homeVisitDetails?.condition ?? '',
       diagnosis: patient.diagnosis,
       referralSource: patient.referralSource,
       emergencyContact: patient.emergencyContact,
@@ -2052,12 +2277,17 @@ function PatientDetailView({
   const scheduledSessions = patientSessions.filter((s) => s.status === 'scheduled');
   const homeVisitSessions = patientSessions.filter((s) => s.sessionType === 'home');
   const clinicSessions    = patientSessions.filter((s) => s.sessionType === 'clinic');
-  const totalSpent = completedSessions
-    .filter((s) => s.amountCollected !== null)
-    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const totalSpent = data.payments
+    .filter((payment) => payment.patientId === patient.id)
+    .reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0);
   const nextSession = patientSessions
     .filter((s) => s.status === 'scheduled' && s.scheduledAt >= todayStr)
     .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
+  const patientPayments = data.payments
+    .filter((payment) => payment.patientId === patient.id)
+    .sort((a, b) => b.paidAt.localeCompare(a.paidAt));
+  const credit = patientCredit(patient.id, data.payments);
+  const due = patientDue(patient.id, patientSessions, data.payments);
 
   const openEdit = () => {
     setDraft({
@@ -2069,6 +2299,9 @@ function PatientDetailView({
       address: patient.address,
       signs: patient.signs ?? '',
       symptoms: patient.symptoms ?? '',
+      patientHistory: patient.patientHistory ?? '',
+      caseType: patient.caseType ?? '',
+      condition: patient.condition ?? patient.homeVisitDetails?.condition ?? '',
       diagnosis: patient.diagnosis,
       referralSource: patient.referralSource,
       emergencyContact: patient.emergencyContact,
@@ -2085,6 +2318,21 @@ function PatientDetailView({
     e.preventDefault();
     onSavePatient(draft, patient.id);
     setEditing(false);
+  };
+
+  const submitPayment = (e: FormEvent) => {
+    e.preventDefault();
+    const amount = normalizeMoney(parseFloat(paymentDraft.amount));
+    if (!amount || amount <= 0) return;
+    onRecordPayment({
+      patientId: patient.id,
+      clinicId: patient.clinicId,
+      paidAt: paymentDraft.paidAt,
+      amount,
+      method: paymentDraft.method,
+      notes: paymentDraft.notes,
+    });
+    setPaymentDraft({ amount: '', paidAt: todayStr, method: 'Cash', notes: '' });
   };
 
   return (
@@ -2121,7 +2369,7 @@ function PatientDetailView({
             <div className="pp-identity">
               <p className="pp-eyebrow">{patient.clinicId ? clinicName(allClinics, patient.clinicId) : 'Home only patient'}</p>
               <h1 className="pp-name">{patient.name}</h1>
-              {patient.diagnosis && <p className="pp-diagnosis">{patient.diagnosis}</p>}
+              <p className="pp-diagnosis">{patientCaseSummary(patient)}</p>
               <div className="pp-badges">
                 <span className="pp-badge">{patient.gender}</span>
                 <span className="pp-badge">{calculateAge(patient.dateOfBirth)} yrs</span>
@@ -2215,9 +2463,37 @@ function PatientDetailView({
         <div className="pp-body-col">
 
           {/* Clinical overview */}
-          {(patient.signs || patient.symptoms || patient.complications || patient.surgeries || patient.notes) && (
+          {(patient.patientHistory || patient.caseType || patient.condition || patient.diagnosis || patient.signs || patient.symptoms || patient.complications || patient.surgeries || patient.notes) && (
             <section className="panel pp-section">
-              <PanelTitle title="Clinical overview" subtitle="Signs, symptoms and medical history" />
+              <PanelTitle title="Clinical overview" subtitle="History, case, condition and diagnosis" />
+              {(patient.patientHistory || patient.caseType || patient.condition || patient.diagnosis) && (
+                <div className="pp-clinical-grid">
+                  {patient.patientHistory && (
+                    <div className="pp-clinical-block">
+                      <span className="pp-clinical-label">Patient history</span>
+                      <p>{patient.patientHistory}</p>
+                    </div>
+                  )}
+                  {patient.caseType && (
+                    <div className="pp-clinical-block">
+                      <span className="pp-clinical-label">Case</span>
+                      <p>{patient.caseType}</p>
+                    </div>
+                  )}
+                  {patient.condition && (
+                    <div className="pp-clinical-block">
+                      <span className="pp-clinical-label">Condition</span>
+                      <p>{patient.condition}</p>
+                    </div>
+                  )}
+                  {patient.diagnosis && (
+                    <div className="pp-clinical-block">
+                      <span className="pp-clinical-label">Diagnosis</span>
+                      <p>{patient.diagnosis}</p>
+                    </div>
+                  )}
+                </div>
+              )}
               {(patient.signs || patient.symptoms) && (
                 <div className="pp-clinical-grid">
                   {patient.signs && (
@@ -2267,6 +2543,8 @@ function PatientDetailView({
                   clinicId: patient.clinicId, name: patient.name, phone: patient.phone,
                   dateOfBirth: patient.dateOfBirth, gender: patient.gender, address: patient.address,
                   signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
+                  patientHistory: patient.patientHistory ?? '', caseType: patient.caseType ?? '',
+                  condition: patient.condition ?? patient.homeVisitDetails?.condition ?? '',
                   diagnosis: patient.diagnosis, referralSource: patient.referralSource,
                   emergencyContact: patient.emergencyContact, notes: patient.notes,
                   complications: patient.complications ?? '', surgeries: patient.surgeries ?? '',
@@ -2309,6 +2587,79 @@ function PatientDetailView({
 
         {/* Right: reports + sessions */}
         <div className="pp-body-col">
+          <section className="panel pp-section">
+            <PanelTitle title="Payments" subtitle="Advance credit, due balance and payment history" />
+            <div className="payment-summary-grid">
+              <div className="payment-summary-card credit">
+                <span>Available credit</span>
+                <strong>{formatCurrency(credit)}</strong>
+              </div>
+              <div className="payment-summary-card due">
+                <span>Outstanding due</span>
+                <strong>{formatCurrency(due)}</strong>
+              </div>
+            </div>
+            <form className="payment-form" onSubmit={submitPayment}>
+              <div className="form-two-col">
+                <label>
+                  Amount received (₹)
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={paymentDraft.amount}
+                    onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })}
+                    placeholder="0"
+                  />
+                </label>
+                <label>
+                  Date
+                  <input
+                    type="date"
+                    value={paymentDraft.paidAt}
+                    onChange={(e) => setPaymentDraft({ ...paymentDraft, paidAt: e.target.value })}
+                  />
+                </label>
+                <label>
+                  Method
+                  <select
+                    value={paymentDraft.method}
+                    onChange={(e) => setPaymentDraft({ ...paymentDraft, method: e.target.value as PaymentMethod })}
+                  >
+                    {PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Notes
+                  <input
+                    value={paymentDraft.notes}
+                    onChange={(e) => setPaymentDraft({ ...paymentDraft, notes: e.target.value })}
+                    placeholder="Reference, package, remarks..."
+                  />
+                </label>
+              </div>
+              <button className="primary-button" type="submit"><DollarSign size={14} /> Record payment</button>
+            </form>
+            {patientPayments.length === 0 ? (
+              <EmptyState message="No payments recorded yet." />
+            ) : (
+              <div className="payment-history-list">
+                {patientPayments.map((payment) => (
+                  <div key={payment.id} className="payment-history-row">
+                    <div>
+                      <strong>{formatCurrency(normalizeMoney(payment.amount))}</strong>
+                      <small>{formatDate(payment.paidAt)} · {payment.method}</small>
+                      {payment.notes && <small>{payment.notes}</small>}
+                    </div>
+                    <span className="payment-allocation-note">
+                      Applied {formatCurrency(payment.allocations.reduce((sum, a) => sum + normalizeMoney(a.amount), 0))}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
 
           {/* Reports */}
           <section className="panel pp-section">
@@ -2368,6 +2719,7 @@ function PatientDetailView({
                     {session.amountCollected !== null && session.status === 'scheduled' && (
                       <span className="revenue-badge est pp-session-amount">Est. {formatCurrency(session.amountCollected)}</span>
                     )}
+                    <PaymentBadge session={session} payments={data.payments} />
                     {session.status === 'scheduled' && (
                       <div className="pp-session-actions">
                         <button
@@ -2414,6 +2766,7 @@ function PatientDetailView({
         <InvoiceModal
           patient={patient}
           sessions={data.therapySessions}
+          payments={data.payments}
           clinics={allClinics}
           profiles={staff}
           onClose={() => setShowInvoice(false)}
@@ -2525,7 +2878,7 @@ function HomeVisitPanel({
       <PanelTitle title="Home visit record" subtitle={`${homeVisitSessions.length} home sessions scheduled`} />
 
       {/* Caregiver card */}
-      {hvd && (hvd.caregiverName || hvd.condition || hvd.homeVisitStartDate) && (
+      {hvd && (hvd.caregiverName || hvd.homeVisitStartDate) && (
         <div className="caregiver-card">
           <div className="caregiver-icon"><Home size={20} /></div>
           <div className="caregiver-details">
@@ -2539,11 +2892,6 @@ function HomeVisitPanel({
               <div className="caregiver-row">
                 <strong>Phone:</strong>
                 <a href={`tel:${hvd.caregiverPhone}`} className="caregiver-phone">{hvd.caregiverPhone}</a>
-              </div>
-            )}
-            {hvd.condition && (
-              <div className="caregiver-row">
-                <strong>Condition:</strong><span>{hvd.condition}</span>
               </div>
             )}
             {hvd.homeVisitStartDate && (
@@ -2737,7 +3085,6 @@ function PatientForm({
       Boolean(draft.name.trim()),
       Boolean(draft.phone.trim()),
       Boolean(draft.dateOfBirth),
-      Boolean(draft.diagnosis.trim()),
       isHomeOnlyPatient(draft) ? true : Boolean(draft.clinicId),
     ];
     return Math.round((checks.filter(Boolean).length / checks.length) * 100);
@@ -2813,6 +3160,7 @@ function PatientForm({
   };
 
   const genderOptions: Patient['gender'][] = ['Female', 'Male', 'Other'];
+  const caseListId = `case-options-${storagePatientId}`;
 
   const reportsBlock = (
     <>
@@ -2892,7 +3240,7 @@ function PatientForm({
                 <div>
                   <h1 className="pe-hero-title">{draft.name.trim() || 'New patient'}</h1>
                   <p className="pe-hero-sub">
-                    {draft.diagnosis.trim() || 'Fill in details below to create the clinical record'}
+                    {(draft.caseType || draft.condition || draft.diagnosis).trim() || 'Fill in details below to create the clinical record'}
                   </p>
                   <div className="pe-hero-badges">
                     {draft.homeVisitDetails ? (
@@ -3079,9 +3427,48 @@ function PatientForm({
         entry={isEntry}
         step={3}
         title="Clinical overview"
-        subtitle="Signs, symptoms, diagnosis and history"
+        subtitle="History, case, condition, signs and diagnosis"
         icon={Stethoscope}
       >
+        <datalist id={caseListId}>
+          {CASE_OPTIONS.map((option) => <option key={option} value={option} />)}
+        </datalist>
+
+        <label>
+          Patient history
+          <textarea
+            value={draft.patientHistory ?? ''}
+            onChange={(e) => setDraft({ ...draft, patientHistory: e.target.value })}
+            placeholder="Relevant medical, lifestyle or injury history"
+            rows={3}
+          />
+        </label>
+
+        <div className="form-two-col">
+          <label>
+            Case
+            <input
+              list={caseListId}
+              value={draft.caseType ?? ''}
+              onChange={(e) => setDraft({ ...draft, caseType: e.target.value })}
+              placeholder="Choose or type case"
+            />
+          </label>
+          <label>
+            Condition
+            <input
+              value={draft.condition ?? ''}
+              onChange={(e) => setDraft({ ...draft, condition: e.target.value })}
+              placeholder="e.g. Frozen shoulder, ACL rehab, cervical pain"
+            />
+          </label>
+        </div>
+
+        <label>
+          Diagnosis
+          <textarea value={draft.diagnosis} onChange={(e) => setDraft({ ...draft, diagnosis: e.target.value })} placeholder="Primary diagnosis" />
+        </label>
+
         <div className="form-two-col">
           <label>
             Signs
@@ -3102,11 +3489,6 @@ function PatientForm({
             />
           </label>
         </div>
-
-        <label>
-          Diagnosis <span className="required">*</span>
-          <textarea required value={draft.diagnosis} onChange={(e) => setDraft({ ...draft, diagnosis: e.target.value })} placeholder="Primary diagnosis" />
-        </label>
 
         <div className="form-two-col">
           <label>
@@ -3191,14 +3573,6 @@ function PatientForm({
                     />
                   </label>
                   <label>
-                    Condition / case summary
-                    <input
-                      value={draft.homeVisitDetails.condition}
-                      onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, condition: e.target.value } })}
-                      placeholder="e.g. Post-discectomy recovery"
-                    />
-                  </label>
-                  <label>
                     Home visit started
                     <input
                       type="date"
@@ -3242,14 +3616,6 @@ function PatientForm({
                   value={draft.homeVisitDetails!.caregiverPhone ?? ''}
                   onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, caregiverPhone: e.target.value } })}
                   placeholder="Caregiver contact number"
-                />
-              </label>
-              <label>
-                Condition / case summary
-                <input
-                  value={draft.homeVisitDetails!.condition}
-                  onChange={(e) => setDraft({ ...draft, homeVisitDetails: { ...draft.homeVisitDetails!, condition: e.target.value } })}
-                  placeholder="e.g. Post-discectomy recovery"
                 />
               </label>
               <label>
@@ -3316,12 +3682,13 @@ function PatientForm({
 // ─── Sessions View (list + actions) ──────────────────────────────────────────
 
 function SessionsView({
-  data, allClinics, profiles, onUpdateSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
+  data, allClinics, profiles, onUpdateSession, onCompleteSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
 }: {
-  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
+  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions' | 'payments'>;
   allClinics: Clinic[];
   profiles: Profile[];
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onCompleteSession: (sessionId: string, updates: Partial<TherapySession>, paymentReceived: number | null) => void;
   onBulkUpdateSessions: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
   onBulkDeleteSessions: (sessionIds: string[]) => void;
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
@@ -3335,7 +3702,7 @@ function SessionsView({
   const [bulkEditTarget, setBulkEditTarget] = useState<BulkEditTarget | null>(null);
   const [filterStatus, setFilterStatus] = useState<'all' | SessionStatus>('all');
   const [filterLevel, setFilterLevel] = useState<'all' | TherapyLevel>('all');
-  const [filterPatient, setFilterPatient] = useState('');
+  const [filterClinic, setFilterClinic] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [expandedPatients, setExpandedPatients] = useState<Set<string>>(new Set());
@@ -3355,13 +3722,13 @@ function SessionsView({
   const submitCompletion = (e: FormEvent) => {
     e.preventDefault();
     if (!completingId || !completionData.therapyType.trim()) return;
-    onUpdateSession(completingId, {
+    onCompleteSession(completingId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
       therapyType: completionData.therapyType.trim(),
       treatmentNotes: completionData.treatmentNotes,
       amountCollected: completionData.amountCollected ? parseFloat(completionData.amountCollected) : null,
-    });
+    }, completionData.paymentReceived ? parseFloat(completionData.paymentReceived) : null);
     setCompletingId(null);
     setCompletionData(emptyCompletionForm());
   };
@@ -3370,7 +3737,7 @@ function SessionsView({
     .filter((s) => s.sessionType === 'clinic')
     .filter((s) => filterStatus === 'all' || s.status === filterStatus)
     .filter((s) => filterLevel === 'all' || s.therapyLevel === filterLevel)
-    .filter((s) => !filterPatient || s.patientId === filterPatient)
+    .filter((s) => !filterClinic || s.clinicId === filterClinic)
     .filter((s) => {
       if (!searchQuery) return true;
       const patient = data.patients.find((p) => p.id === s.patientId);
@@ -3396,8 +3763,8 @@ function SessionsView({
           scheduled: sessions.filter((s) => s.status === 'scheduled').length,
           completed: sessions.filter((s) => s.status === 'completed').length,
           cancelled: sessions.filter((s) => s.status === 'cancelled' || s.status === 'no_show').length,
-          revenue:   sessions.filter((s) => s.status === 'completed' && s.amountCollected !== null)
-                             .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0),
+          revenue:   data.payments.filter((p) => p.patientId === patientId)
+                             .reduce((sum, p) => sum + p.amount, 0),
           next:      sorted.find((s) => s.status === 'scheduled' && s.scheduledAt >= todayStr),
         };
       })
@@ -3406,9 +3773,10 @@ function SessionsView({
 
   const totalScheduled = filteredSessions.filter((s) => s.status === 'scheduled').length;
   const totalCompleted = filteredSessions.filter((s) => s.status === 'completed').length;
-  const totalRevenue = filteredSessions
-    .filter((s) => s.status === 'completed' && s.amountCollected !== null)
-    .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
+  const visiblePatientIds = new Set(filteredSessions.map((s) => s.patientId));
+  const totalRevenue = data.payments
+    .filter((payment) => visiblePatientIds.has(payment.patientId))
+    .reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0);
   const estimatedRevenue = filteredSessions
     .filter((s) => s.status === 'scheduled' && s.amountCollected !== null)
     .reduce((sum, s) => sum + (s.amountCollected ?? 0), 0);
@@ -3467,6 +3835,7 @@ function SessionsView({
         <InvoiceModal
           patient={invoicePatient}
           sessions={data.therapySessions}
+          payments={data.payments}
           clinics={allClinics}
           profiles={profiles}
           initialMode={invoiceModal.mode}
@@ -3509,9 +3878,9 @@ function SessionsView({
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
-            <select value={filterPatient} onChange={(e) => setFilterPatient(e.target.value)}>
-              <option value="">All patients</option>
-              {data.patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            <select value={filterClinic} onChange={(e) => setFilterClinic(e.target.value)}>
+              <option value="">All clinics</option>
+              {allClinics.map((clinic) => <option key={clinic.id} value={clinic.id}>{clinic.name}</option>)}
             </select>
             <select value={filterLevel} onChange={(e) => setFilterLevel(e.target.value as typeof filterLevel)}>
               <option value="all">All levels</option>
@@ -3544,7 +3913,10 @@ function SessionsView({
                       >
                         <span className="patient-group-avatar">{(patient?.name ?? '?').charAt(0)}</span>
                         <div className="patient-group-info">
-                          <strong>{patient?.name ?? 'Unknown patient'}</strong>
+                          <strong>
+                            {patient?.name ?? 'Unknown patient'}
+                            {patient?.gender && <span className="patient-gender-chip">{patient.gender}</span>}
+                          </strong>
                           <span className="patient-group-clinic">
                             <Building2 size={11} />
                             {clinicName(allClinics, patient?.clinicId ?? sessions[0]?.clinicId)}
@@ -3636,6 +4008,7 @@ function SessionsView({
                                           {session.status === 'scheduled' ? 'Est. ' : ''}{formatCurrency(session.amountCollected)}
                                         </span>
                                       )}
+                                      <PaymentBadge session={session} payments={data.payments} />
                                     </div>
                                     <div className="group-session-actions">
                                       {session.status === 'scheduled' && (
@@ -3643,11 +4016,7 @@ function SessionsView({
                                           <button className="primary-button icon-only" title="Mark complete"
                                             onClick={() => {
                                               setCompletingId(session.id);
-                                              setCompletionData({
-                                                treatmentNotes: session.treatmentNotes ?? '',
-                                                amountCollected: session.amountCollected?.toString() ?? '',
-                                                therapyType: session.therapyType ?? '',
-                                              });
+                                              setCompletionData(completionFormFromSession(session, data.therapySessions));
                                             }}>
                                             <Check size={13} />
                                           </button>
@@ -3698,13 +4067,14 @@ function SessionsView({
 // ─── Home Visits View (home-only scheduling + management) ─────────────────────
 
 function HomeVisitsView({
-  data, currentUser, preset, onAddSession, onUpdateSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
+  data, currentUser, preset, onAddSession, onUpdateSession, onCompleteSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
 }: {
-  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
+  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions' | 'payments'>;
   currentUser: Profile;
   preset: { patientId?: string; sessionType?: SessionType };
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onCompleteSession: (sessionId: string, updates: Partial<TherapySession>, paymentReceived: number | null) => void;
   onBulkUpdateSessions: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
   onBulkDeleteSessions: (sessionIds: string[]) => void;
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
@@ -3724,7 +4094,7 @@ function HomeVisitsView({
   const [startDate, setStartDate] = useState(todayStr);
   const [startTime, setStartTime] = useState('09:00');
   const [startTime2, setStartTime2] = useState('11:00');
-  const [visitCount, setVisitCount] = useState(1);
+  const [visitCount, setVisitCount] = useState<number | ''>(1);
   const [freqDays, setFreqDays] = useState(1);
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
@@ -3746,9 +4116,19 @@ function HomeVisitsView({
     if (!patientId || !therapyType.trim() || !isHomeVisitSlot(startTime)) return;
     if (dualTherapy && (!therapyType2.trim() || !isHomeVisitSlot(startTime2))) return;
 
-    const count = Math.max(1, Math.min(visitCount, 60));
+    const count = Math.max(1, Math.min(visitCount === '' ? 1 : visitCount, 60));
     const gap = Math.max(1, freqDays);
     const parsedAmount = amount ? parseFloat(amount) : null;
+    const selectedPatient = data.patients.find((p) => p.id === patientId);
+    const totalSessions = dualTherapy ? count * 2 : count;
+    const confirmLines = [
+      `Schedule ${totalSessions} home visit${totalSessions !== 1 ? 's' : ''}${selectedPatient ? ` for ${selectedPatient.name}` : ''}?`,
+      `Start: ${formatDate(startDate)} at ${formatVisitSlotLabel(startTime)}`,
+      dualTherapy ? `Second slot: ${formatVisitSlotLabel(startTime2)}` : null,
+      count > 1 ? `Repeat every ${gap} day${gap !== 1 ? 's' : ''} for ${count} visit day${count !== 1 ? 's' : ''}.` : null,
+    ].filter(Boolean);
+    if (!window.confirm(confirmLines.join('\n'))) return;
+
     const base = {
       patientId,
       clinicId: null,
@@ -3784,13 +4164,13 @@ function HomeVisitsView({
   const submitCompletion = (e: FormEvent) => {
     e.preventDefault();
     if (!completingId || !completionData.therapyType.trim()) return;
-    onUpdateSession(completingId, {
+    onCompleteSession(completingId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
       therapyType: completionData.therapyType.trim(),
       treatmentNotes: completionData.treatmentNotes,
       amountCollected: completionData.amountCollected ? parseFloat(completionData.amountCollected) : null,
-    });
+    }, completionData.paymentReceived ? parseFloat(completionData.paymentReceived) : null);
     setCompletingId(null);
     setCompletionData(emptyCompletionForm());
   };
@@ -3952,7 +4332,16 @@ function HomeVisitsView({
             )}
             <label>
               Number of visits
-              <input type="number" min="1" max="60" value={visitCount} onChange={(e) => setVisitCount(parseInt(e.target.value || '1', 10))} />
+              <input
+                type="number"
+                min="0"
+                max="60"
+                value={visitCount}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setVisitCount(val === '' ? '' : parseInt(val, 10));
+                }}
+              />
             </label>
             <label>
               Repeat every (days)
@@ -3970,8 +4359,8 @@ function HomeVisitsView({
               <button className="primary-button" type="submit">
                 <Plus size={15} />
                 {dualTherapy
-                  ? `Schedule ${visitCount * 2} home visit${visitCount * 2 !== 1 ? 's' : ''}`
-                  : `Schedule home visit${visitCount !== 1 ? 's' : ''}`}
+                  ? `Schedule ${(visitCount === '' ? 0 : visitCount) * 2} home visit${(visitCount === '' ? 0 : visitCount) * 2 !== 1 ? 's' : ''}`
+                  : `Schedule home visit${visitCount !== 1 && visitCount !== '' ? 's' : ''}`}
               </button>
             </div>
           </form>
@@ -4005,7 +4394,8 @@ function HomeVisitsView({
                         <span className="hv-card-name">{patient?.name ?? 'Unknown patient'}</span>
                         {patient?.gender && <span className="hv-detail-chip">{patient.gender}</span>}
                         {age && <span className="hv-detail-chip">{age}</span>}
-                        {hvd?.condition && <span className="hv-detail-chip hv-chip-condition">{hvd.condition}</span>}
+                        {patient?.caseType && <span className="hv-detail-chip hv-chip-condition">{patient.caseType}</span>}
+                        {(patient?.condition || hvd?.condition) && <span className="hv-detail-chip hv-chip-condition">{patient?.condition || hvd?.condition}</span>}
                       </div>
 
                       <div className="hv-card-meta-row">
@@ -4090,6 +4480,7 @@ function HomeVisitsView({
                                 {session.status === 'scheduled' ? 'Est. ' : ''}{formatCurrency(session.amountCollected)}
                               </span>
                             )}
+                            <PaymentBadge session={session} payments={data.payments} />
                             <div className="hv-session-actions">
                               {session.status === 'scheduled' && (
                                 <>
@@ -4100,11 +4491,7 @@ function HomeVisitsView({
                                   <button className="primary-button icon-only" title="Mark complete"
                                     onClick={() => {
                                       setCompletingId(session.id);
-                                      setCompletionData({
-                                        treatmentNotes: session.treatmentNotes ?? '',
-                                        amountCollected: session.amountCollected?.toString() ?? '',
-                                        therapyType: session.therapyType ?? '',
-                                      });
+                                      setCompletionData(completionFormFromSession(session, data.therapySessions));
                                     }}>
                                     <Check size={12} />
                                   </button>
@@ -4189,16 +4576,27 @@ function BulkEditSessionsModal({
   onClose: () => void;
 }) {
   const [form, setForm] = useState(emptyBulkEditForm);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(target.sessions.map((s) => s.id))
+  );
   const [saving, setSaving] = useState(false);
   const isHome = target.sessionType === 'home';
   const slotOptions = isHome ? HOME_VISIT_SLOTS : CLINIC_VISIT_SLOTS;
   const sorted = [...target.sessions].sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+  const selectedSessions = sorted.filter((s) => selectedIds.has(s.id));
 
   const set = (k: keyof BulkEditForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const toggleSession = (sessionId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(sessionId) ? next.delete(sessionId) : next.add(sessionId);
+      return next;
+    });
+  };
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    const items = sorted
+    const items = selectedSessions
       .map((session) => ({
         sessionId: session.id,
         updates: buildBulkSessionUpdates(session, form),
@@ -4221,15 +4619,55 @@ function BulkEditSessionsModal({
           <div>
             <h3 className="modal-title">Bulk edit scheduled sessions</h3>
             <p className="modal-sub">
-              {target.patientName} · {sorted.length} session{sorted.length !== 1 ? 's' : ''}
+              {target.patientName} · {selectedSessions.length} of {sorted.length} selected
             </p>
           </div>
           <button type="button" className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="modal-body">
           <p className="bulk-edit-hint">
-            Fill only the fields you want to change — blank fields are left unchanged on every session.
+            Select the scheduled sessions first, then fill only the fields you want to change. Blank fields are left unchanged.
           </p>
+
+          <div className="bulk-session-picker">
+            <div className="bulk-session-picker-header">
+              <span>Choose sessions</span>
+              <div className="bulk-session-picker-actions">
+                <button
+                  type="button"
+                  className="ghost-link"
+                  onClick={() => setSelectedIds(new Set(sorted.map((s) => s.id)))}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="ghost-link"
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="bulk-session-option-list">
+              {sorted.map((session) => (
+                <label key={session.id} className="bulk-session-option">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(session.id)}
+                    onChange={() => toggleSession(session.id)}
+                  />
+                  <span>
+                    <strong>{formatSessionDateTime(session.scheduledAt)}</strong>
+                    <small>
+                      {formatTherapyTypeDisplay(session.therapyType)}
+                      {session.amountCollected !== null ? ` · Est. ${formatCurrency(session.amountCollected)}` : ''}
+                    </small>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
 
           <div className="form-two-col">
             <label>
@@ -4291,14 +4729,15 @@ function BulkEditSessionsModal({
           </label>
 
           <div className="bulk-edit-preview">
-            <span className="bulk-edit-preview-label">Sessions to update</span>
+            <span className="bulk-edit-preview-label">Selected sessions</span>
             <ul className="bulk-edit-preview-list">
-              {sorted.slice(0, 8).map((s) => (
+              {selectedSessions.slice(0, 8).map((s) => (
                 <li key={s.id}>
                   {formatSessionDateTime(s.scheduledAt)} · {formatTherapyTypeDisplay(s.therapyType)}
                 </li>
               ))}
-              {sorted.length > 8 && <li className="bulk-edit-preview-more">+{sorted.length - 8} more</li>}
+              {selectedSessions.length === 0 && <li className="bulk-edit-preview-more">No sessions selected</li>}
+              {selectedSessions.length > 8 && <li className="bulk-edit-preview-more">+{selectedSessions.length - 8} more</li>}
             </ul>
           </div>
         </div>
@@ -4306,14 +4745,15 @@ function BulkEditSessionsModal({
           <button
             className="danger-button"
             type="button"
-            onClick={() => onDeleteAll(sorted.map((s) => s.id))}
+            disabled={selectedSessions.length === 0}
+            onClick={() => onDeleteAll(selectedSessions.map((s) => s.id))}
           >
-            <Trash2 size={14} /> Delete all {sorted.length}
+            <Trash2 size={14} /> Delete selected {selectedSessions.length}
           </button>
           <div className="bulk-edit-footer-actions">
             <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
-            <button className="primary-button" type="submit" disabled={saving}>
-              <Check size={14} /> Apply to {sorted.length} session{sorted.length !== 1 ? 's' : ''}
+            <button className="primary-button" type="submit" disabled={saving || selectedSessions.length === 0}>
+              <Check size={14} /> Apply to {selectedSessions.length} session{selectedSessions.length !== 1 ? 's' : ''}
             </button>
           </div>
         </div>
@@ -4713,7 +5153,7 @@ function ScheduleNewPage({
   const [mode, setMode] = useState<ScheduleMode>('count');
   const [startDate, setStartDate] = useState(todayStr);
   const [startTime, setStartTime] = useState('09:00');
-  const [countConfig, setCountConfig] = useState({ count: 10, freqValue: 2, freqUnit: 'days' as FrequencyUnit });
+  const [countConfig, setCountConfig] = useState({ count: 1, freqValue: 2, freqUnit: 'days' as FrequencyUnit });
   const [rangeConfig, setRangeConfig] = useState({ endDate: '', freqValue: 2, freqUnit: 'days' as FrequencyUnit });
 
   const [confirmed, setConfirmed] = useState(false);
@@ -4975,8 +5415,9 @@ function ScheduleNewPage({
                   <input
                     type="number" min="1" max="60" required
                     value={countConfig.count}
-                    onChange={(e) => setCountConfig({ ...countConfig, count: parseInt(e.target.value) || 1 })}
+                    onChange={(e) => setCountConfig({ ...countConfig, count: parseInt(e.target.value) })}
                   />
+                      
                 </label>
                 <label>
                   Repeat every
@@ -5443,7 +5884,7 @@ function CalendarView({
                             onChange={() => toggleBkPatient(p.id)}
                           />
                           <span>{p.name}</span>
-                          {p.diagnosis && <span className="patient-clinic-tag">{p.diagnosis.slice(0, 28)}{p.diagnosis.length > 28 ? '…' : ''}</span>}
+                          <span className="patient-clinic-tag">{patientCaseSummary(p).slice(0, 28)}{patientCaseSummary(p).length > 28 ? '…' : ''}</span>
                         </label>
                       ))}
                     </div>
@@ -6227,7 +6668,7 @@ function SessionRow({
           </span>
         </div>
         <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
-        <small>{patient?.name ?? 'Unknown patient'} · {clinicName(data.clinics, session.clinicId)}</small>
+        <small>{patient?.name ?? 'Unknown patient'}{patient?.gender ? ` · ${patient.gender}` : ''} · {clinicName(data.clinics, session.clinicId)}</small>
       </div>
       <div className="session-meta">
         <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
@@ -6244,6 +6685,20 @@ function SessionRow({
   );
 }
 
+function PaymentBadge({ session, payments }: { session: TherapySession; payments: PaymentRecord[] }) {
+  if (session.status !== 'completed' && session.amountCollected === null) return null;
+  const status = sessionPaymentStatus(session, payments);
+  const paid = paidForSession(session.id, payments);
+  const fee = sessionFee(session);
+  const balance = sessionBalance(session, payments);
+  const label =
+    status === 'paid' ? 'Paid'
+      : status === 'partial' ? `Partial ${formatCurrency(paid)} / ${formatCurrency(fee)}`
+      : status === 'due' ? `Due ${formatCurrency(balance)}`
+      : 'No charge';
+  return <span className={`payment-status-badge ${status}`}>{label}</span>;
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function clinicName(clinics: Clinic[], clinicId: string | null | undefined) {
@@ -6255,19 +6710,49 @@ function isHomeOnlyPatient(p: { clinicId: string | null; homeVisitDetails?: Home
   return p.clinicId === null || Boolean(p.homeVisitDetails);
 }
 
+function patientCaseSummary(patient: Patient | PatientDraft) {
+  return patient.caseType || patient.condition || patient.diagnosis || 'Case not set';
+}
+
 // ─── Therapy type multi-select ────────────────────────────────────────────────
 
 type CompletionFormData = {
   treatmentNotes: string;
   amountCollected: string;
+  paymentReceived: string;
   therapyType: string;
 };
 
 const emptyCompletionForm = (): CompletionFormData => ({
   treatmentNotes: '',
   amountCollected: '',
+  paymentReceived: '',
   therapyType: '',
 });
+
+function amountInputValue(amount: number | null | undefined) {
+  if (amount === null || amount === undefined || !Number.isFinite(amount)) return '';
+  return String(Math.round(amount));
+}
+
+function completionFormFromSession(session: TherapySession, sessions: TherapySession[]): CompletionFormData {
+  const previous = sessions
+    .filter((s) => s.id !== session.id && s.patientId === session.patientId && s.status === 'completed')
+    .sort((a, b) => {
+      const aTime = a.completedAt ?? a.scheduledAt;
+      const bTime = b.completedAt ?? b.scheduledAt;
+      return bTime.localeCompare(aTime);
+    })[0];
+
+  return {
+    therapyType: session.therapyType || previous?.therapyType || '',
+    treatmentNotes: session.treatmentNotes || previous?.treatmentNotes || '',
+    amountCollected: session.amountCollected != null
+      ? amountInputValue(session.amountCollected)
+      : amountInputValue(previous?.amountCollected),
+    paymentReceived: '',
+  };
+}
 
 function CompleteSessionModal({
   title,
@@ -6310,9 +6795,8 @@ function CompleteSessionModal({
             />
           </label>
           <label>
-            Treatment notes <span className="required">*</span>
+            Treatment notes
             <textarea
-              required
               rows={3}
               value={data.treatmentNotes}
               onChange={(e) => onChange({ treatmentNotes: e.target.value })}
@@ -6320,7 +6804,7 @@ function CompleteSessionModal({
             />
           </label>
           <label>
-            Amount collected (₹)
+            Session fee (₹)
             <input
               type="number"
               min="0"
@@ -6328,6 +6812,17 @@ function CompleteSessionModal({
               value={data.amountCollected}
               onChange={(e) => onChange({ amountCollected: e.target.value })}
               placeholder="0"
+            />
+          </label>
+          <label>
+            Payment received now (₹)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={data.paymentReceived}
+              onChange={(e) => onChange({ paymentReceived: e.target.value })}
+              placeholder="Leave blank to mark due or use credit"
             />
           </label>
         </div>
@@ -6446,7 +6941,7 @@ function TherapyTypeSelect({
 
 // ─── Expenses & Equipment View ────────────────────────────────────────────────
 
-const EXPENSE_CATEGORIES: ExpenseCategory[] = ['Rent', 'Utilities', 'Salaries', 'Supplies', 'Maintenance', 'Other'];
+const EXPENSE_CATEGORIES: ExpenseCategory[] = ['Rent', 'Electricity', 'Cleaning', 'Salaries', 'Maintenance', 'Other'];
 const EXPENSE_RECURRENCES: ExpenseRecurrence[] = ['one-time', 'monthly', 'annual'];
 const EQUIPMENT_CATEGORIES: EquipmentCategory[] = ['Machine', 'Hand tool', 'Consumable', 'Furniture', 'Other'];
 const EQUIPMENT_CONDITIONS: EquipmentCondition[] = ['Good', 'Fair', 'Needs service', 'Retired'];
@@ -6469,10 +6964,11 @@ const CLINIC_CONSUMABLES: { name: string; emoji: string }[] = [
 ];
 
 const emptyExpense = (clinicId: string): Omit<ClinicExpense, 'id'> => ({
-  clinicId, category: 'Supplies', amount: 0, date: todayStr, recurrence: 'one-time', notes: '',
+  clinicId, category: 'Maintenance', amount: 0, date: todayStr, recurrence: 'one-time', notes: '',
 });
 const emptyEquipment = (clinicId: string): Omit<Equipment, 'id'> => ({
   clinicId, name: '', category: 'Machine', purchaseDate: todayStr, purchaseCost: null,
+  quantity: 1, unitPrice: null, minimumQuantity: 0, details: '',
   condition: 'Good', serialNumber: '', notes: '',
 });
 
@@ -6509,8 +7005,11 @@ function ExpensesView({
   const [eqFilterCat, setEqFilterCat]       = useState<EquipmentCategory | 'all'>('all');
   const [eqFilterCond, setEqFilterCond]     = useState<EquipmentCondition | 'all'>('all');
   const [eqSearch, setEqSearch]   = useState('');
+  const [eqQtyDrafts, setEqQtyDrafts] = useState<Record<string, string>>({});
+  const [eqQtySavingId, setEqQtySavingId] = useState<string | null>(null);
   const [expSaving, setExpSaving]   = useState(false);
   const [eqSaving, setEqSaving]     = useState(false);
+  const normalizedEquipment = equipment.map(normalizeEquipment);
 
   // ── Helpers ──
   const clinicName = (id: string) => clinics.find((c) => c.id === id)?.name ?? '—';
@@ -6536,19 +7035,22 @@ function ExpensesView({
 
   // ── Equipment derived ──
   const filteredEq = equipment.filter((e) => {
+    const item = normalizeEquipment(e);
     if (eqFilterClinic !== 'all' && e.clinicId !== eqFilterClinic) return false;
     if (eqFilterCat !== 'all' && e.category !== eqFilterCat) return false;
     if (eqFilterCond !== 'all' && e.condition !== eqFilterCond) return false;
     if (eqSearch) {
       const q = eqSearch.toLowerCase();
-      if (!e.name.toLowerCase().includes(q) && !e.serialNumber.toLowerCase().includes(q)) return false;
+      const haystack = [item.name, item.serialNumber, item.details, item.notes, item.category].join(' ').toLowerCase();
+      if (!haystack.includes(q)) return false;
     }
     return true;
-  }).sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate));
+  }).map(normalizeEquipment).sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate));
 
-  const totalItems  = equipment.length;
-  const totalValue  = equipment.reduce((s, e) => s + (e.purchaseCost ?? 0), 0);
-  const needsService = equipment.filter((e) => e.condition === 'Needs service').length;
+  const totalItems  = normalizedEquipment.length;
+  const totalUnits = normalizedEquipment.reduce((s, e) => s + e.quantity, 0);
+  const totalValue  = normalizedEquipment.reduce((s, e) => s + equipmentTotalValue(e), 0);
+  const lowStockItems = normalizedEquipment.filter(isLowStockEquipment);
 
   // ── Expense handlers ──
   const openAddExp = () => { setExpEditing(null); setExpDraft(emptyExpense(clinics[0]?.id ?? '')); setExpModal(true); };
@@ -6574,16 +7076,31 @@ function ExpensesView({
   // ── Equipment handlers ──
   const openAddEq = () => { setEqEditing(null); setEqDraft(emptyEquipment(clinics[0]?.id ?? '')); setEqModal(true); };
   const openEditEq = (e: Equipment) => {
-    setEqEditing(e);
-    setEqDraft({ clinicId: e.clinicId, name: e.name, category: e.category, purchaseDate: e.purchaseDate, purchaseCost: e.purchaseCost, condition: e.condition, serialNumber: e.serialNumber, notes: e.notes });
+    const item = normalizeEquipment(e);
+    setEqEditing(item);
+    setEqDraft({
+      clinicId: item.clinicId,
+      name: item.name,
+      category: item.category,
+      purchaseDate: item.purchaseDate,
+      purchaseCost: item.purchaseCost,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      minimumQuantity: item.minimumQuantity,
+      details: item.details,
+      condition: item.condition,
+      serialNumber: item.serialNumber,
+      notes: item.notes,
+    });
     setEqModal(true);
   };
   const submitEq = async (ev: FormEvent) => {
     ev.preventDefault();
     setEqSaving(true);
     try {
-      if (eqEditing) await onUpdateEquipment({ ...eqDraft, id: eqEditing.id });
-      else await onAddEquipment(eqDraft);
+      const normalizedDraft = normalizeEquipmentInput(eqDraft);
+      if (eqEditing) await onUpdateEquipment({ ...normalizedDraft, id: eqEditing.id });
+      else await onAddEquipment(normalizedDraft);
       setEqModal(false);
     } catch {
       // Error surfaced via systemNotice in parent handler
@@ -6594,6 +7111,48 @@ function ExpensesView({
 
   const pickConsumable = (name: string) => {
     setEqDraft((d) => ({ ...d, name, category: 'Consumable' }));
+  };
+  const eqDraftTotal = equipmentTotalValue(eqDraft);
+
+  const quantityDraftValue = (item: Equipment) => eqQtyDrafts[item.id] ?? String(item.quantity);
+  const parseQuantityDraft = (value: string, fallback: number) => {
+    if (value.trim() === '') return fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback;
+  };
+  const setQuantityDraft = (id: string, value: string) => {
+    if (/^\d*$/.test(value)) setEqQtyDrafts((drafts) => ({ ...drafts, [id]: value }));
+  };
+  const resetQuantityDraft = (id: string) => {
+    setEqQtyDrafts((drafts) => {
+      const { [id]: _removed, ...rest } = drafts;
+      void _removed;
+      return rest;
+    });
+  };
+  const saveQuantity = async (item: Equipment, nextQuantity?: number) => {
+    if (nextQuantity === undefined && quantityDraftValue(item).trim() === '') {
+      resetQuantityDraft(item.id);
+      return;
+    }
+    const quantity = nextQuantity ?? parseQuantityDraft(quantityDraftValue(item), item.quantity);
+    if (quantity === item.quantity) {
+      resetQuantityDraft(item.id);
+      return;
+    }
+    setEqQtySavingId(item.id);
+    try {
+      await onUpdateEquipment({ ...item, quantity });
+      resetQuantityDraft(item.id);
+    } catch {
+      // Error surfaced via systemNotice in parent handler
+    } finally {
+      setEqQtySavingId(null);
+    }
+  };
+  const bumpQuantity = (item: Equipment, delta: number) => {
+    const current = parseQuantityDraft(quantityDraftValue(item), item.quantity);
+    void saveQuantity(item, Math.max(0, current + delta));
   };
 
   return (
@@ -6620,6 +7179,7 @@ function ExpensesView({
         </button>
         <button className={`exp-tab${tab === 'equipment' ? ' active' : ''}`} onClick={() => setTab('equipment')}>
           <Sparkles size={15} /> Equipment &amp; Tools
+          {lowStockItems.length > 0 && <span className="tab-alert-dot" title={`${lowStockItems.length} low-stock item${lowStockItems.length === 1 ? '' : 's'}`} />}
         </button>
       </div>
 
@@ -6828,26 +7388,27 @@ function ExpensesView({
                       {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </label>
-                  <label>Category
-                    <select value={eqDraft.category} onChange={(e) => setEqDraft({ ...eqDraft, category: e.target.value as EquipmentCategory })}>
-                      {EQUIPMENT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
+                  <label>Quantity <span className="required">*</span>
+                    <input type="number" required min="0" step="1" value={eqDraft.quantity}
+                      onChange={(e) => setEqDraft({ ...eqDraft, quantity: Math.max(0, parseInt(e.target.value, 10) ?? 0) })} />
                   </label>
-                  <label>Condition
-                    <select value={eqDraft.condition} onChange={(e) => setEqDraft({ ...eqDraft, condition: e.target.value as EquipmentCondition })}>
-                      {EQUIPMENT_CONDITIONS.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
+                  <label>Minimum required quantity
+                    <input type="number" min="0" step="1" value={eqDraft.minimumQuantity || ''}
+                      onChange={(e) => setEqDraft({ ...eqDraft, minimumQuantity: Math.max(0, parseInt(e.target.value, 10) || 0) })} />
                   </label>
-                  <label>Serial number
-                    <input value={eqDraft.serialNumber} onChange={(e) => setEqDraft({ ...eqDraft, serialNumber: e.target.value })} placeholder="Optional" />
+                  <label>Price per unit (₹)
+                    <input type="number" min="0" step="0.01"
+                      value={eqDraft.unitPrice ?? ''}
+                      onChange={(e) => setEqDraft({ ...eqDraft, unitPrice: e.target.value ? parseFloat(e.target.value) : null })} />
+                  </label>
+                  <label>Total price/value
+                    <div className="eq-total-preview">{eqDraftTotal > 0 ? formatCurrency(eqDraftTotal) : '—'}</div>
                   </label>
                   <label>Purchase date
                     <input type="date" value={eqDraft.purchaseDate} onChange={(e) => setEqDraft({ ...eqDraft, purchaseDate: e.target.value })} />
                   </label>
-                  <label>Purchase cost (₹)
-                    <input type="number" min="0" step="0.01"
-                      value={eqDraft.purchaseCost ?? ''}
-                      onChange={(e) => setEqDraft({ ...eqDraft, purchaseCost: e.target.value ? parseFloat(e.target.value) : null })} />
+                  <label style={{ gridColumn: '1 / -1' }}>Details
+                    <textarea rows={2} value={eqDraft.details} onChange={(e) => setEqDraft({ ...eqDraft, details: e.target.value })} placeholder="Size, pack details, usage, supplier, or other item details…" />
                   </label>
                   <label style={{ gridColumn: '1 / -1' }}>Notes
                     <textarea rows={2} value={eqDraft.notes} onChange={(e) => setEqDraft({ ...eqDraft, notes: e.target.value })} placeholder="Optional notes…" />
@@ -6870,37 +7431,29 @@ function ExpensesView({
             <div className="exp-metric-card exp-card-green">
               <span className="exp-metric-icon">📦</span>
               <div>
-                <span className="exp-metric-label">Total items</span>
+                <span className="exp-metric-label">Item types</span>
                 <span className="exp-metric-value">{totalItems}</span>
               </div>
             </div>
             <div className="exp-metric-card exp-card-blue">
+              <span className="exp-metric-icon">#</span>
+              <div>
+                <span className="exp-metric-label">Units in stock</span>
+                <span className="exp-metric-value">{totalUnits}</span>
+              </div>
+            </div>
+            <div className="exp-metric-card exp-card-purple">
               <span className="exp-metric-icon">💰</span>
               <div>
-                <span className="exp-metric-label">Total value</span>
+                <span className="exp-metric-label">Inventory value</span>
                 <span className="exp-metric-value">{formatCurrency(totalValue)}</span>
               </div>
             </div>
-            <div className={`exp-metric-card${needsService > 0 ? ' exp-card-red' : ' exp-card-slate'}`}>
-              <span className="exp-metric-icon">🔧</span>
+            <div className={`exp-metric-card${lowStockItems.length > 0 ? ' exp-card-red' : ' exp-card-slate'}`}>
+              <span className="exp-metric-icon">!</span>
               <div>
-                <span className="exp-metric-label">Needs service</span>
-                <span className="exp-metric-value">{needsService}</span>
-              </div>
-            </div>
-            <div className="exp-metric-card exp-card-breakdown">
-              <span className="exp-metric-label" style={{ marginBottom: 8 }}>Condition</span>
-              <div className="exp-cat-bars">
-                {EQUIPMENT_CONDITIONS.map((cond) => {
-                  const count = equipment.filter((e) => e.condition === cond).length;
-                  if (!count) return null;
-                  return (
-                    <div key={cond} className="exp-cat-bar-row">
-                      <span className={`eq-cond-badge cond-${cond.toLowerCase().replace(/\s+/g, '-')}`}>{cond}</span>
-                      <span className="exp-cat-amount">{count}</span>
-                    </div>
-                  );
-                })}
+                <span className="exp-metric-label">Low stock</span>
+                <span className="exp-metric-value">{lowStockItems.length}</span>
               </div>
             </div>
           </div>
@@ -6910,7 +7463,7 @@ function ExpensesView({
             <div className="exp-filter-left">
               <div className="search-field">
                 <Search size={15} />
-                <input placeholder="Search name or serial…" value={eqSearch} onChange={(e) => setEqSearch(e.target.value)} />
+                <input placeholder="Search name, serial, details…" value={eqSearch} onChange={(e) => setEqSearch(e.target.value)} />
               </div>
               <select value={eqFilterClinic} onChange={(e) => setEqFilterClinic(e.target.value)}>
                 <option value="all">All clinics</option>
@@ -6939,34 +7492,103 @@ function ExpensesView({
                     <th>Item</th>
                     <th>Clinic</th>
                     <th>Category</th>
+                    <th>Qty</th>
+                    <th>Min</th>
+                    <th>Unit price</th>
+                    <th>Total</th>
                     <th>Condition</th>
-                    <th>Purchased</th>
-                    <th>Cost</th>
                     <th>Serial #</th>
                     <th style={{ width: 72 }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredEq.map((e) => (
-                    <tr key={e.id}>
-                      <td className="eq-td-name">
-                        <span className="eq-item-name">{e.name}</span>
-                        {e.notes && <span className="eq-item-notes">{e.notes}</span>}
-                      </td>
-                      <td className="exp-td-clinic">{clinicName(e.clinicId)}</td>
-                      <td><span className={`exp-cat-badge cat-${e.category.toLowerCase().replace(/\s+/g, '-')}`}>{e.category}</span></td>
-                      <td><span className={`eq-cond-badge cond-${e.condition.toLowerCase().replace(/\s+/g, '-')}`}>{e.condition}</span></td>
-                      <td className="exp-td-date">{e.purchaseDate || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                      <td className="exp-td-amount">{e.purchaseCost !== null ? formatCurrency(e.purchaseCost) : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                      <td className="exp-td-notes">{e.serialNumber || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                      <td>
-                        <div className="exp-row-actions">
-                          <button className="exp-action-btn" title="Edit" onClick={() => openEditEq(e)}><ClipboardList size={13} /></button>
-                          <button className="exp-action-btn exp-action-delete" title="Delete" onClick={() => onDeleteEquipment(e.id)}><Trash2 size={13} /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredEq.map((e) => {
+                    const lowStock = isLowStockEquipment(e);
+                    const total = equipmentTotalValue(e);
+                    const quantityDraft = quantityDraftValue(e);
+                    const parsedQuantityDraft = parseQuantityDraft(quantityDraft, e.quantity);
+                    const quantityChanged = parsedQuantityDraft !== e.quantity || (eqQtyDrafts[e.id] !== undefined && quantityDraft.trim() === '');
+                    const quantitySaving = eqQtySavingId === e.id;
+                    return (
+                      <tr key={e.id} className={lowStock ? 'eq-low-stock-row' : undefined}>
+                        <td className="eq-td-name">
+                          <span className="eq-item-name">{e.name}</span>
+                          <span className="eq-item-meta">
+                            {e.purchaseDate || 'No purchase date'}
+                            {lowStock && <span className="eq-low-stock-badge">Low stock</span>}
+                          </span>
+                          {e.details && <span className="eq-item-details">{e.details}</span>}
+                          {e.notes && <span className="eq-item-notes">{e.notes}</span>}
+                        </td>
+                        <td className="exp-td-clinic">{clinicName(e.clinicId)}</td>
+                        <td><span className={`exp-cat-badge cat-${e.category.toLowerCase().replace(/\s+/g, '-')}`}>{e.category}</span></td>
+                        <td className="eq-stock-cell">
+                          <div className="eq-qty-control" aria-label={`Update quantity for ${e.name}`}>
+                            <button
+                              type="button"
+                              className="eq-qty-btn"
+                              title="Reduce quantity"
+                              disabled={quantitySaving || parsedQuantityDraft <= 0}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => bumpQuantity(e, -1)}
+                            >
+                              <Minus size={12} />
+                            </button>
+                            <input
+                              aria-label={`Quantity for ${e.name}`}
+                              inputMode="numeric"
+                              value={quantityDraft}
+                              disabled={quantitySaving}
+                              onChange={(event) => setQuantityDraft(e.id, event.target.value)}
+                              onBlur={() => { if (quantityChanged) void saveQuantity(e); }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.currentTarget.blur();
+                                }
+                                if (event.key === 'Escape') {
+                                  resetQuantityDraft(e.id);
+                                  event.currentTarget.blur();
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="eq-qty-btn"
+                              title="Increase quantity"
+                              disabled={quantitySaving}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => bumpQuantity(e, 1)}
+                            >
+                              <Plus size={12} />
+                            </button>
+                            {quantityChanged && (
+                              <button
+                                type="button"
+                                className="eq-qty-save"
+                                title="Save quantity"
+                                disabled={quantitySaving}
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => void saveQuantity(e)}
+                              >
+                                {quantitySaving ? <Loader2 size={12} className="icon-spin" /> : <Check size={12} />}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="eq-stock-cell">{e.minimumQuantity > 0 ? e.minimumQuantity : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                        <td className="exp-td-amount">{e.unitPrice !== null ? formatCurrency(e.unitPrice) : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                        <td className="exp-td-amount">{total > 0 ? formatCurrency(total) : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                        <td><span className={`eq-cond-badge cond-${e.condition.toLowerCase().replace(/\s+/g, '-')}`}>{e.condition}</span></td>
+                        <td className="exp-td-notes">{e.serialNumber || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                        <td>
+                          <div className="exp-row-actions">
+                            <button className="exp-action-btn" title="Edit" onClick={() => openEditEq(e)}><ClipboardList size={13} /></button>
+                            <button className="exp-action-btn exp-action-delete" title="Delete" onClick={() => onDeleteEquipment(e.id)}><Trash2 size={13} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}

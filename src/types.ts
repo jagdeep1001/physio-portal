@@ -60,6 +60,9 @@ export interface Patient {
   address: string;
   signs: string;
   symptoms: string;
+  patientHistory: string;
+  caseType: string;
+  condition: string;
   diagnosis: string;
   referralSource: string;
   emergencyContact: string;
@@ -87,7 +90,26 @@ export interface TherapySession {
   amountCollected: number | null;
 }
 
-export type ExpenseCategory = 'Rent' | 'Utilities' | 'Salaries' | 'Supplies' | 'Maintenance' | 'Other';
+export type PaymentMethod = 'Cash' | 'UPI' | 'Card' | 'Bank transfer' | 'Other';
+
+export interface PaymentAllocation {
+  sessionId: string;
+  amount: number;
+}
+
+export interface PaymentRecord {
+  id: string;
+  patientId: string;
+  clinicId: string | null;
+  paidAt: string;
+  amount: number;
+  method: PaymentMethod;
+  notes: string;
+  allocations: PaymentAllocation[];
+  createdAt: string;
+}
+
+export type ExpenseCategory = 'Rent' | 'Electricity' | 'Cleaning' | 'Salaries' | 'Maintenance' | 'Other';
 export type ExpenseRecurrence = 'one-time' | 'monthly' | 'annual';
 
 export interface ClinicExpense {
@@ -110,6 +132,10 @@ export interface Equipment {
   category: EquipmentCategory;
   purchaseDate: string;
   purchaseCost: number | null;
+  quantity: number;
+  unitPrice: number | null;
+  minimumQuantity: number;
+  details: string;
   condition: EquipmentCondition;
   serialNumber: string;
   notes: string;
@@ -134,6 +160,7 @@ export interface AppData {
   profiles: Profile[];
   patients: Patient[];
   therapySessions: TherapySession[];
+  payments: PaymentRecord[];
   expenses: ClinicExpense[];
   equipment: Equipment[];
 }
