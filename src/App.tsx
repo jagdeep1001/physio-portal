@@ -303,6 +303,7 @@ export function App() {
             const user = remote.profiles.find((p) => p.id === savedId);
             if (user && user.status === 'active') {
               setCurrentUser(user);
+              setPage(user.role === 'admin' ? 'dashboard' : 'sessions');
             } else {
               // Saved ID invalid or account deactivated — clear it
               localStorage.removeItem(SESSION_USER_KEY);
@@ -317,6 +318,7 @@ export function App() {
         const user = localData.profiles.find((p) => p.id === savedId);
         if (user && user.status === 'active') {
           setCurrentUser(user);
+          setPage(user.role === 'admin' ? 'dashboard' : 'sessions');
         } else {
           localStorage.removeItem(SESSION_USER_KEY);
         }
@@ -346,6 +348,12 @@ export function App() {
     };
   }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const defaultPageForRole = (role: Profile['role']): Page =>
+    role === 'admin' ? 'dashboard' : 'sessions';
+
+  const isAdminOnlyPage = (p: Page) =>
+    p === 'dashboard' || p === 'homeDashboard' || p === 'clinics' || p === 'staff' || p === 'expenses';
+
   const persist = (updater: (draft: AppData) => AppData) => {
     setData((current) => {
       const next = updater(current);
@@ -353,6 +361,13 @@ export function App() {
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (currentUser.role !== 'admin' && isAdminOnlyPage(page)) {
+      setPage('sessions');
+    }
+  }, [currentUser, page]);
 
   const visibleClinicIds = useMemo(() => {
     if (!currentUser) return [];
@@ -397,6 +412,7 @@ export function App() {
         // Ensure we have the full profile from refreshed remote data
         const freshUser = remote?.profiles.find((p) => p.id === user.id) ?? user;
         signIn(freshUser);
+        setPage(defaultPageForRole(freshUser.role));
         setAuthError('');
         setSystemNotice('');
       } catch (error) {
@@ -411,7 +427,9 @@ export function App() {
       return;
     }
     if (user.status !== 'active') { setAuthError('This account is waiting for admin approval.'); return; }
-    signIn(user); setAuthError('');
+    signIn(user);
+    setPage(defaultPageForRole(user.role));
+    setAuthError('');
   };
 
   const handleSignup = async (form: SignupForm) => {
@@ -593,7 +611,10 @@ export function App() {
   };
 
   const deleteSession = async (sessionId: string) => {
-    if (!window.confirm('Delete this session? This cannot be undone.')) return;
+    const session = data.therapySessions.find((s) => s.id === sessionId);
+    const visitLabel = session?.sessionType === 'home' ? 'home visit' : 'clinic session';
+    const when = session ? formatDateTime(session.scheduledAt) : 'this session';
+    if (!window.confirm(`Delete scheduled ${visitLabel} on ${when}? This cannot be undone.`)) return;
     if (supabase) {
       try {
         const d = await supabase.from('therapy_sessions').delete().eq('id', sessionId);
@@ -605,6 +626,27 @@ export function App() {
     persist((draftData) => ({
       ...draftData,
       therapySessions: draftData.therapySessions.filter((s) => s.id !== sessionId),
+    }));
+  };
+
+  const bulkDeleteSessions = async (sessionIds: string[]) => {
+    if (sessionIds.length === 0) return;
+    const label = sessionIds.length === 1
+      ? 'this scheduled session'
+      : `${sessionIds.length} scheduled sessions`;
+    if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+    if (supabase) {
+      try {
+        const d = await supabase.from('therapy_sessions').delete().in('id', sessionIds);
+        if (d.error) throw d.error;
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); }
+      return;
+    }
+    const idSet = new Set(sessionIds);
+    persist((draftData) => ({
+      ...draftData,
+      therapySessions: draftData.therapySessions.filter((s) => !idSet.has(s.id)),
     }));
   };
 
@@ -857,8 +899,8 @@ export function App() {
   }
 
   const navItems: Array<{ page: Page; label: string; icon: LucideIcon; adminOnly?: boolean }> = [
-    { page: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { page: 'homeDashboard', label: 'Home Dashboard', icon: Home },
+    { page: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, adminOnly: true },
+    { page: 'homeDashboard', label: 'Home Dashboard', icon: Home, adminOnly: true },
     { page: 'patients', label: 'Patients', icon: Users },
     { page: 'sessions', label: 'Sessions', icon: CalendarDays },
     { page: 'homeVisits', label: 'Home Visits', icon: Home },
@@ -938,7 +980,7 @@ export function App() {
 
         {systemNotice && <div className="system-notice">{systemNotice}</div>}
 
-        {page === 'dashboard' && (
+        {page === 'dashboard' && currentUser.role === 'admin' && (
           <Dashboard
             data={scoped}
             allData={data}
@@ -946,7 +988,7 @@ export function App() {
             onOpenPatient={goToPatientDetail}
           />
         )}
-        {page === 'homeDashboard' && (
+        {page === 'homeDashboard' && currentUser.role === 'admin' && (
           <HomeDashboard
             data={scoped}
             onOpenPatient={goToPatientDetail}
@@ -979,6 +1021,8 @@ export function App() {
             onSavePatient={savePatient}
             onDeletePatient={deletePatient}
             onSyncHomeVisitLog={syncHomeVisitLog}
+            onUpdateSession={updateSession}
+            onDeleteSession={deleteSession}
             onBack={() => setPage('patients')}
             onGoToAddPatient={() => setPage('patientEntry')}
             onScheduleSession={goToScheduleForPatient}
@@ -991,6 +1035,7 @@ export function App() {
             profiles={scoped.profiles}
             onUpdateSession={updateSession}
             onBulkUpdateSessions={bulkUpdateSessions}
+            onBulkDeleteSessions={bulkDeleteSessions}
             onChangeStatus={changeSessionStatus}
             onDeleteSession={deleteSession}
             onScheduleNew={() => { setSchedulePreset({}); setPage('scheduleNew'); }}
@@ -1005,6 +1050,7 @@ export function App() {
             onAddSession={addSession}
             onUpdateSession={updateSession}
             onBulkUpdateSessions={bulkUpdateSessions}
+            onBulkDeleteSessions={bulkDeleteSessions}
             onChangeStatus={changeSessionStatus}
             onDeleteSession={deleteSession}
             onOpenPatient={goToPatientDetail}
@@ -1031,6 +1077,7 @@ export function App() {
             onOpenPatient={goToPatientDetail}
             onAddSession={addSession}
             onUpdateSession={updateSession}
+            onDeleteSession={deleteSession}
           />
         )}
         {page === 'clinics' && currentUser.role === 'admin' && (
@@ -1937,7 +1984,8 @@ type HomeVisitSync =
 
 function PatientDetailView({
   data, allClinics, staff, currentUser, defaultClinicId,
-  patientId, onSavePatient, onDeletePatient, onSyncHomeVisitLog, onBack, onGoToAddPatient, onScheduleSession,
+  patientId, onSavePatient, onDeletePatient, onSyncHomeVisitLog, onUpdateSession, onDeleteSession,
+  onBack, onGoToAddPatient, onScheduleSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
@@ -1948,6 +1996,8 @@ function PatientDetailView({
   onSavePatient: (patient: PatientDraft, editingId: string | null, newPatientId?: string) => void;
   onDeletePatient: (patientId: string) => void | Promise<void>;
   onSyncHomeVisitLog: (patientId: string, updatedPatient: PatientDraft, sync: HomeVisitSync) => void;
+  onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onDeleteSession: (sessionId: string) => void;
   onBack: () => void;
   onGoToAddPatient: () => void;
   onScheduleSession: (patientId: string, sessionType: SessionType) => void;
@@ -1956,6 +2006,7 @@ function PatientDetailView({
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
+  const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
   const [draft, setDraft] = useState<PatientDraft>(() => emptyPatient(defaultClinicId));
 
   useEffect(() => {
@@ -2317,6 +2368,24 @@ function PatientDetailView({
                     {session.amountCollected !== null && session.status === 'scheduled' && (
                       <span className="revenue-badge est pp-session-amount">Est. {formatCurrency(session.amountCollected)}</span>
                     )}
+                    {session.status === 'scheduled' && (
+                      <div className="pp-session-actions">
+                        <button
+                          className="secondary-button icon-only"
+                          title="Edit scheduled session"
+                          onClick={() => setEditingSession(session)}
+                        >
+                          <ClipboardList size={12} />
+                        </button>
+                        <button
+                          className="danger-button icon-only"
+                          title="Delete scheduled session"
+                          onClick={() => void onDeleteSession(session.id)}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2348,6 +2417,17 @@ function PatientDetailView({
           clinics={allClinics}
           profiles={staff}
           onClose={() => setShowInvoice(false)}
+        />
+      )}
+
+      {editingSession && (
+        <EditSessionModal
+          session={editingSession}
+          data={data}
+          lockSessionType={editingSession.sessionType}
+          onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
+          onDelete={() => { void onDeleteSession(editingSession.id); setEditingSession(null); }}
+          onClose={() => setEditingSession(null)}
         />
       )}
     </div>
@@ -3236,13 +3316,14 @@ function PatientForm({
 // ─── Sessions View (list + actions) ──────────────────────────────────────────
 
 function SessionsView({
-  data, allClinics, profiles, onUpdateSession, onBulkUpdateSessions, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
+  data, allClinics, profiles, onUpdateSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
   profiles: Profile[];
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
   onBulkUpdateSessions: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
+  onBulkDeleteSessions: (sessionIds: string[]) => void;
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
   onDeleteSession: (sessionId: string) => void;
   onScheduleNew: () => void;
@@ -3356,6 +3437,7 @@ function SessionsView({
         <BulkEditSessionsModal
           target={bulkEditTarget}
           onApply={(items) => { void onBulkUpdateSessions(items); setBulkEditTarget(null); }}
+          onDeleteAll={(ids) => { void onBulkDeleteSessions(ids); setBulkEditTarget(null); }}
           onClose={() => setBulkEditTarget(null)}
         />
       )}
@@ -3367,6 +3449,7 @@ function SessionsView({
           data={data}
           lockSessionType="clinic"
           onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
+          onDelete={() => { void onDeleteSession(editingSession.id); setEditingSession(null); }}
           onClose={() => setEditingSession(null)}
         />
       )}
@@ -3573,7 +3656,7 @@ function SessionsView({
                                           </button>
                                           <button className="ghost-button icon-only" title="No show" onClick={() => onChangeStatus(session.id, 'no_show')}>NS</button>
                                           <button className="ghost-button icon-only" title="Cancel" onClick={() => onChangeStatus(session.id, 'cancelled')}><X size={13} /></button>
-                                          <button className="danger-button icon-only" title="Delete" onClick={() => onDeleteSession(session.id)}><Trash2 size={13} /></button>
+                                          <button className="danger-button icon-only" title="Delete scheduled session" onClick={() => void onDeleteSession(session.id)}><Trash2 size={13} /></button>
                                         </>
                                       )}
                                       {session.status === 'completed' && session.amountCollected !== null && patient && (
@@ -3615,7 +3698,7 @@ function SessionsView({
 // ─── Home Visits View (home-only scheduling + management) ─────────────────────
 
 function HomeVisitsView({
-  data, currentUser, preset, onAddSession, onUpdateSession, onBulkUpdateSessions, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
+  data, currentUser, preset, onAddSession, onUpdateSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   currentUser: Profile;
@@ -3623,6 +3706,7 @@ function HomeVisitsView({
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
   onBulkUpdateSessions: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
+  onBulkDeleteSessions: (sessionIds: string[]) => void;
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
   onDeleteSession: (sessionId: string) => void;
   onOpenPatient: (patientId: string) => void;
@@ -3760,6 +3844,7 @@ function HomeVisitsView({
         <BulkEditSessionsModal
           target={bulkEditTarget}
           onApply={(items) => { void onBulkUpdateSessions(items); setBulkEditTarget(null); }}
+          onDeleteAll={(ids) => { void onBulkDeleteSessions(ids); setBulkEditTarget(null); }}
           onClose={() => setBulkEditTarget(null)}
         />
       )}
@@ -3770,6 +3855,7 @@ function HomeVisitsView({
           data={data}
           lockSessionType="home"
           onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
+          onDelete={() => { void onDeleteSession(editingSession.id); setEditingSession(null); }}
           onClose={() => setEditingSession(null)}
         />
       )}
@@ -4028,8 +4114,8 @@ function HomeVisitsView({
                                     onClick={() => onChangeStatus(session.id, 'cancelled')}><X size={12} /></button>
                                 </>
                               )}
-                              <button className="danger-button icon-only" title="Delete"
-                                onClick={() => onDeleteSession(session.id)}><Trash2 size={12} /></button>
+                              <button className="danger-button icon-only" title="Delete scheduled session"
+                                onClick={() => void onDeleteSession(session.id)}><Trash2 size={12} /></button>
                             </div>
                           </div>
                         </div>
@@ -4095,10 +4181,11 @@ function buildBulkSessionUpdates(session: TherapySession, form: BulkEditForm): P
 }
 
 function BulkEditSessionsModal({
-  target, onApply, onClose,
+  target, onApply, onDeleteAll, onClose,
 }: {
   target: BulkEditTarget;
   onApply: (items: { sessionId: string; updates: Partial<TherapySession> }[]) => void;
+  onDeleteAll: (sessionIds: string[]) => void;
   onClose: () => void;
 }) {
   const [form, setForm] = useState(emptyBulkEditForm);
@@ -4215,11 +4302,20 @@ function BulkEditSessionsModal({
             </ul>
           </div>
         </div>
-        <div className="modal-footer">
-          <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
-          <button className="primary-button" type="submit" disabled={saving}>
-            <Check size={14} /> Apply to {sorted.length} session{sorted.length !== 1 ? 's' : ''}
+        <div className="modal-footer bulk-edit-footer">
+          <button
+            className="danger-button"
+            type="button"
+            onClick={() => onDeleteAll(sorted.map((s) => s.id))}
+          >
+            <Trash2 size={14} /> Delete all {sorted.length}
           </button>
+          <div className="bulk-edit-footer-actions">
+            <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
+            <button className="primary-button" type="submit" disabled={saving}>
+              <Check size={14} /> Apply to {sorted.length} session{sorted.length !== 1 ? 's' : ''}
+            </button>
+          </div>
         </div>
       </form>
     </div>
@@ -4229,12 +4325,13 @@ function BulkEditSessionsModal({
 // ─── Edit Session Modal ────────────────────────────────────────────────────────
 
 function EditSessionModal({
-  session, data, lockSessionType, onSave, onClose,
+  session, data, lockSessionType, onSave, onDelete, onClose,
 }: {
   session: TherapySession;
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   lockSessionType?: SessionType;
   onSave: (updates: Partial<TherapySession>) => void;
+  onDelete?: () => void;
   onClose: () => void;
 }) {
   const effectiveType = lockSessionType ?? (session.sessionType as SessionType);
@@ -4361,9 +4458,16 @@ function EditSessionModal({
             <textarea rows={2} value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Any notes for this session…" />
           </label>
         </div>
-        <div className="modal-footer">
-          <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
-          <button className="primary-button" type="submit"><Check size={14} /> Save changes</button>
+        <div className="modal-footer edit-session-footer">
+          {session.status === 'scheduled' && onDelete && (
+            <button className="danger-button" type="button" onClick={onDelete}>
+              <Trash2 size={14} /> Delete session
+            </button>
+          )}
+          <div className="edit-session-footer-actions">
+            <button className="ghost-button" type="button" onClick={onClose}><X size={14} /> Cancel</button>
+            <button className="primary-button" type="submit"><Check size={14} /> Save changes</button>
+          </div>
         </div>
       </form>
     </div>
@@ -5026,7 +5130,7 @@ function ScheduleNewPage({
 const CLINIC_DAY_SLOTS = CLINIC_VISIT_SLOTS;
 
 function CalendarView({
-  data, allClinics, currentUser, onOpenPatient, onAddSession, onUpdateSession,
+  data, allClinics, currentUser, onOpenPatient, onAddSession, onUpdateSession, onDeleteSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
@@ -5034,6 +5138,7 @@ function CalendarView({
   onOpenPatient: (patientId: string) => void;
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onDeleteSession: (sessionId: string) => void;
 }) {
   const now = new Date();
   const [view, setView]         = useState<'month' | 'day'>('day');
@@ -5213,12 +5318,20 @@ function CalendarView({
           </div>
           <div className="cal-popover-actions">
             {popover.status === 'scheduled' && (
-              <button
-                className="secondary-button"
-                onClick={() => { setEditingSession(popover); setPopover(null); }}
-              >
-                <ClipboardList size={14} /> Edit session
-              </button>
+              <>
+                <button
+                  className="secondary-button"
+                  onClick={() => { setEditingSession(popover); setPopover(null); }}
+                >
+                  <ClipboardList size={14} /> Edit session
+                </button>
+                <button
+                  className="danger-button"
+                  onClick={() => { void onDeleteSession(popover.id); setPopover(null); }}
+                >
+                  <Trash2 size={14} /> Delete session
+                </button>
+              </>
             )}
             <button className="primary-button" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
               <Users size={14} /> View patient
@@ -5240,6 +5353,7 @@ function CalendarView({
           data={data}
           lockSessionType="clinic"
           onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
+          onDelete={() => { void onDeleteSession(editingSession.id); setEditingSession(null); }}
           onClose={() => setEditingSession(null)}
         />
       )}

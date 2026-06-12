@@ -1186,6 +1186,13 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
   padding: 6px 8px;
 }
 .pp-session-amount { flex-shrink: 0; align-self: center; }
+.pp-session-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+  align-self: center;
+}
 
 .pp-session-item.status-completed .pp-session-date { border-color: #6ee7b7; background: #f0fdf4; }
 .pp-session-item.status-scheduled .pp-session-date { border-color: #93c5fd; background: #eff6ff; }
@@ -2709,8 +2716,8 @@ textarea { min-height: 76px; resize: vertical; }
   display: flex;
   gap: 8px;
   align-items: stretch;
-  margin-top: 0;
-}
+    margin-top: 0;
+  }
 .staff-title-select-row select { flex: 1; min-width: 0; }
 .staff-title-custom-row input  { flex: 1; min-width: 0; }
 .staff-title-select-row .ghost-button,
@@ -3095,6 +3102,30 @@ textarea { min-height: 76px; resize: vertical; }
 }
 .bulk-edit-preview-list li { margin-bottom: 3px; }
 .bulk-edit-preview-more { color: var(--muted); list-style: none; margin-left: -1.1rem; }
+.bulk-edit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.bulk-edit-footer-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.edit-session-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.edit-session-footer-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
 
 .home-schedule-grid .form-actions {
   align-self: end;
@@ -4083,7 +4114,7 @@ textarea { min-height: 76px; resize: vertical; }
 }
 
 .invoice-empty-state {
-  padding: 16px;
+    padding: 16px;
   border-radius: 10px;
   background: #fffbeb;
   border: 1px solid #fcd34d;
@@ -4108,7 +4139,7 @@ textarea { min-height: 76px; resize: vertical; }
 /* Compact success modal after scheduling */
 .schedule-success-modal {
   display: flex;
-  flex-direction: column;
+    flex-direction: column;
   padding: 0;
   overflow: hidden;
 }
