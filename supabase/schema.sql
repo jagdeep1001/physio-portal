@@ -24,6 +24,7 @@ create table if not exists public.profiles (
 create table if not exists public.patients (
   id uuid primary key default gen_random_uuid(),
   clinic_id uuid not null references public.clinics(id),
+  salutation text not null default '',
   name text not null,
   phone text not null default '',
   date_of_birth date,
@@ -40,6 +41,8 @@ create table if not exists public.patients (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.patients add column if not exists salutation text not null default '';
 
 create table if not exists public.visits (
   id uuid primary key default gen_random_uuid(),

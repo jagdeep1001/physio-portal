@@ -4,6 +4,7 @@ export type SessionStatus = 'scheduled' | 'completed' | 'cancelled' | 'no_show';
 export type SessionType = 'clinic' | 'home';
 export type TherapyLevel = 'basic' | 'rehab' | 'advance';
 export type Gender = 'Female' | 'Male' | 'Other';
+export type Salutation = '' | 'Mr' | 'Mrs' | 'Ms' | 'Miss' | 'Dr';
 
 export interface Clinic {
   id: string;
@@ -53,6 +54,7 @@ export interface HomeVisitDetails {
 export interface Patient {
   id: string;
   clinicId: string | null;
+  salutation?: Salutation;
   name: string;
   phone: string;
   dateOfBirth: string;

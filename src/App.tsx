@@ -120,6 +120,7 @@ import type {
   PaymentRecord,
   Profile,
   Role,
+  Salutation,
   SessionStatus,
   SessionType,
   SignupForm,
@@ -157,6 +158,8 @@ const CASE_OPTIONS = [
   'Posture correction',
   'Home care',
 ];
+const SALUTATION_OPTIONS: Salutation[] = ['Mr', 'Mrs', 'Ms', 'Miss', 'Dr'];
+const SALUTATION_PATTERN = /^(mr|mrs|ms|miss|dr)\.?\s+/i;
 
 const emptyHomeVisitDetails = (): HomeVisitDetails => ({
   caregiverName: '',
@@ -171,6 +174,7 @@ const emptyHomeVisitDetails = (): HomeVisitDetails => ({
 
 const emptyPatient = (clinicId: string | null): PatientDraft => ({
   clinicId,
+  salutation: '',
   name: '',
   phone: '',
   dateOfBirth: '',
@@ -212,8 +216,11 @@ function loadInitialData(): AppData {
       ...rest,
       patients: (rest.patients ?? []).map((p) => {
         const hvd = (p as Patient).homeVisitDetails;
+        const nameParts = splitSalutation((p as Patient).name, (p as Patient).salutation);
         return {
           ...p,
+          salutation: nameParts.salutation,
+          name: nameParts.name,
           reports: (p as Patient).reports ?? [],
           signs:         (p as Patient).signs         ?? '',
           symptoms:      (p as Patient).symptoms      ?? '',
@@ -298,6 +305,32 @@ function formatDate(value: string) {
   const d = parseAppDate(value);
   if (Number.isNaN(d.getTime())) return value;
   return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+}
+
+function nameInitial(name: string | undefined | null) {
+  const cleaned = (name ?? '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .replace(SALUTATION_PATTERN, '')
+    .trim();
+  return (cleaned.match(/[A-Za-z0-9]/)?.[0] ?? '?').toUpperCase();
+}
+
+function splitSalutation(rawName: string, storedSalutation?: Salutation | null) {
+  const cleanName = (rawName ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+  if (storedSalutation !== undefined && storedSalutation !== null) {
+    return { salutation: storedSalutation, name: cleanName.replace(SALUTATION_PATTERN, '').trim() };
+  }
+  const match = cleanName.match(SALUTATION_PATTERN);
+  if (!match) return { salutation: '' as Salutation, name: cleanName };
+  const raw = match[1].toLowerCase();
+  const salutation = (raw === 'mr' ? 'Mr' : raw === 'mrs' ? 'Mrs' : raw === 'ms' ? 'Ms' : raw === 'miss' ? 'Miss' : 'Dr') as Salutation;
+  return { salutation, name: cleanName.replace(SALUTATION_PATTERN, '').trim() };
+}
+
+function patientDisplayName(patient: Pick<Patient, 'name'> & Partial<Pick<Patient, 'salutation'>>) {
+  const split = splitSalutation(patient.name, patient.salutation);
+  return [split.salutation, split.name].filter(Boolean).join('. ') || patient.name;
 }
 
 function calculateAge(dateOfBirth: string) {
@@ -1800,7 +1833,7 @@ function Dashboard({
                     <span className={`compact-type-dot ${session.sessionType}`} />
                     <div className="compact-info">
                       <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
-                      <small>{patient?.name ?? '—'}{patient?.gender ? ` · ${patient.gender}` : ''} · {formatDateTime(session.scheduledAt)}</small>
+                      <small>{patient ? patientDisplayName(patient) : '—'}{patient?.gender ? ` · ${patient.gender}` : ''} · {formatDateTime(session.scheduledAt)}</small>
                     </div>
                     <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
                   </div>
@@ -1820,9 +1853,9 @@ function Dashboard({
                 const sessCount = allSessions.filter((s) => s.patientId === patient.id).length;
                 return (
                   <button key={patient.id} className="compact-row clickable" onClick={() => onOpenPatient(patient.id)}>
-                    <span className="compact-avatar">{patient.name.charAt(0)}</span>
+                    <span className="compact-avatar">{nameInitial(patient.name)}</span>
                     <div className="compact-info">
-                      <strong>{patient.name} <span className="patient-gender-chip">{patient.gender}</span></strong>
+                      <strong>{patientDisplayName(patient)} <span className="patient-gender-chip">{patient.gender}</span></strong>
                       <small>{patientCaseSummary(patient).slice(0, 40)}{patientCaseSummary(patient).length > 40 ? '…' : ''}</small>
                     </div>
                     <span className="compact-count">{sessCount} sess.</span>
@@ -2023,7 +2056,7 @@ function HomeDashboard({
                   <button key={session.id} className="compact-row clickable" onClick={() => patient && onOpenPatient(patient.id)}>
                     <span className="compact-type-dot home" />
                     <div className="compact-info">
-                      <strong>{patient?.name ?? 'Unknown patient'} {patient?.gender && <span className="patient-gender-chip">{patient.gender}</span>}</strong>
+                      <strong>{patient ? patientDisplayName(patient) : 'Unknown patient'} {patient?.gender && <span className="patient-gender-chip">{patient.gender}</span>}</strong>
                       <small>{formatDateTime(session.scheduledAt)} · {formatTherapyTypeDisplay(session.therapyType)}</small>
                     </div>
                     <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
@@ -2042,9 +2075,9 @@ function HomeDashboard({
             <div className="compact-list">
               {attentionPatients.map(({ patient, lastDone, next, count }) => (
                 <button key={patient.id} className="compact-row clickable" onClick={() => onOpenPatient(patient.id)}>
-                  <span className="compact-avatar">{patient.name.charAt(0)}</span>
+                  <span className="compact-avatar">{nameInitial(patient.name)}</span>
                   <div className="compact-info">
-                    <strong>{patient.name} <span className="patient-gender-chip">{patient.gender}</span></strong>
+                    <strong>{patientDisplayName(patient)} <span className="patient-gender-chip">{patient.gender}</span></strong>
                     <small>{next ? `Next ${formatDateTime(next.scheduledAt)}` : 'No upcoming visit'} · {lastDone ? `Last ${formatDate(lastDone.scheduledAt)}` : 'No completed visit'}</small>
                   </div>
                   <span className="compact-count">{count} visits</span>
@@ -2113,10 +2146,10 @@ function PatientsView({
             const hasHomeSessions = sessions.some((s) => s.sessionType === 'home');
             return (
               <button key={patient.id} className="table-row patient-row" onClick={() => onOpenPatient(patient.id)}>
-                <span className={`patient-avatar${homeOnly ? ' patient-avatar-home' : ''}`}>{patient.name.charAt(0)}</span>
+                <span className={`patient-avatar${homeOnly ? ' patient-avatar-home' : ''}`}>{nameInitial(patient.name)}</span>
                 <span>
                   <strong className="patient-name-row">
-                    {patient.name}
+                    {patientDisplayName(patient)}
                     <span className="patient-gender-chip">{patient.gender}</span>
                     {homeOnly && <span className="home-badge-sm" title="Home only patient"><Home size={10} /></span>}
                   </strong>
@@ -2233,9 +2266,11 @@ function PatientDetailView({
 
   useEffect(() => {
     if (!patient) return;
+    const nameParts = splitSalutation(patient.name, patient.salutation);
     setDraft({
       clinicId: patient.clinicId,
-      name: patient.name,
+      salutation: nameParts.salutation,
+      name: nameParts.name,
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
       gender: patient.gender,
@@ -2290,9 +2325,11 @@ function PatientDetailView({
   const due = patientDue(patient.id, patientSessions, data.payments);
 
   const openEdit = () => {
+    const nameParts = splitSalutation(patient.name, patient.salutation);
     setDraft({
       clinicId: patient.clinicId,
-      name: patient.name,
+      salutation: nameParts.salutation,
+      name: nameParts.name,
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
       gender: patient.gender,
@@ -2365,10 +2402,10 @@ function PatientDetailView({
         <div className="pp-hero-accent" />
         <div className="pp-hero-body">
           <div className="pp-hero-main">
-            <div className="pp-avatar">{patient.name.charAt(0).toUpperCase()}</div>
+            <div className="pp-avatar">{nameInitial(patient.name)}</div>
             <div className="pp-identity">
               <p className="pp-eyebrow">{patient.clinicId ? clinicName(allClinics, patient.clinicId) : 'Home only patient'}</p>
-              <h1 className="pp-name">{patient.name}</h1>
+              <h1 className="pp-name">{patientDisplayName(patient)}</h1>
               <p className="pp-diagnosis">{patientCaseSummary(patient)}</p>
               <div className="pp-badges">
                 <span className="pp-badge">{patient.gender}</span>
@@ -2540,7 +2577,7 @@ function PatientDetailView({
                 const log   = hvd.homeSessionLog ?? [];
                 const notes = { ...(hvd.homeSessionNotes ?? {}) };
                 const buildPayload = (newHvd: HomeVisitDetails): PatientDraft => ({
-                  clinicId: patient.clinicId, name: patient.name, phone: patient.phone,
+                  clinicId: patient.clinicId, salutation: patient.salutation ?? '', name: patient.name, phone: patient.phone,
                   dateOfBirth: patient.dateOfBirth, gender: patient.gender, address: patient.address,
                   signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
                   patientHistory: patient.patientHistory ?? '', caseType: patient.caseType ?? '',
@@ -3394,8 +3431,17 @@ function PatientForm({
 
         <div className="form-two-col">
           <label>
+            Salutation <span className="required">*</span>
+            <select required value={draft.salutation ?? ''} onChange={(e) => setDraft({ ...draft, salutation: e.target.value as Salutation })}>
+              {SALUTATION_OPTIONS.map((value) => <option key={value} value={value}>{value || 'None'}</option>)}
+            </select>
+          </label>
+          <label>
             Full name <span className="required">*</span>
-            <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Patient full name" />
+            <input required value={draft.name} onChange={(e) => {
+              const next = splitSalutation(e.target.value, draft.salutation || undefined);
+              setDraft({ ...draft, salutation: next.salutation, name: next.name });
+            }} placeholder="Patient full name" />
           </label>
           <label>
             Phone <span className="required">*</span>
@@ -3911,10 +3957,10 @@ function SessionsView({
                         onClick={() => togglePatient(patientId)}
                         type="button"
                       >
-                        <span className="patient-group-avatar">{(patient?.name ?? '?').charAt(0)}</span>
+                        <span className="patient-group-avatar">{nameInitial(patient?.name)}</span>
                         <div className="patient-group-info">
                           <strong>
-                            {patient?.name ?? 'Unknown patient'}
+                            {patient ? patientDisplayName(patient) : 'Unknown patient'}
                             {patient?.gender && <span className="patient-gender-chip">{patient.gender}</span>}
                           </strong>
                           <span className="patient-group-clinic">
@@ -3950,7 +3996,7 @@ function SessionsView({
                           className="secondary-button patient-group-bulk-btn"
                           title="Bulk edit all scheduled sessions"
                           onClick={() => setBulkEditTarget({
-                            patientName: patient?.name ?? 'Patient',
+                            patientName: patient ? patientDisplayName(patient) : 'Patient',
                             sessionType: 'clinic',
                             sessions: sessions.filter((s) => s.status === 'scheduled'),
                           })}
@@ -4387,11 +4433,11 @@ function HomeVisitsView({
                 <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}`}>
                   {/* ── Collapsed header (always visible) ── */}
                   <div className="hv-card-header">
-                    <div className="hv-card-avatar">{(patient?.name ?? '?').charAt(0).toUpperCase()}</div>
+                    <div className="hv-card-avatar">{nameInitial(patient?.name)}</div>
 
                     <div className="hv-card-main">
                       <div className="hv-card-name-row">
-                        <span className="hv-card-name">{patient?.name ?? 'Unknown patient'}</span>
+                        <span className="hv-card-name">{patient ? patientDisplayName(patient) : 'Unknown patient'}</span>
                         {patient?.gender && <span className="hv-detail-chip">{patient.gender}</span>}
                         {age && <span className="hv-detail-chip">{age}</span>}
                         {patient?.caseType && <span className="hv-detail-chip hv-chip-condition">{patient.caseType}</span>}
@@ -4436,7 +4482,7 @@ function HomeVisitsView({
                           onClick={(e) => {
                             e.stopPropagation();
                             setBulkEditTarget({
-                              patientName: patient?.name ?? 'Patient',
+                              patientName: patient ? patientDisplayName(patient) : 'Patient',
                               sessionType: 'home',
                               sessions: sessions.filter((s) => s.status === 'scheduled'),
                             });
@@ -4819,7 +4865,7 @@ function EditSessionModal({
           <div>
             <h3 className="modal-title">Edit scheduled session</h3>
             <p className="modal-sub">
-              {patient?.name ?? 'Unknown'}
+              {patient ? patientDisplayName(patient) : 'Unknown'}
               {lockSessionType === 'home' ? ' · Home visit' : lockSessionType === 'clinic' ? ' · Clinic' : ''}
             </p>
           </div>
@@ -5733,7 +5779,7 @@ function CalendarView({
             <div className="cal-popover-row"><Users size={14} /><div>
               <span className="cal-row-label">Patient</span>
               <button className="ghost-link cal-row-value" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
-                {patient?.name ?? 'Unknown'} ↗
+                {patient ? patientDisplayName(patient) : 'Unknown'} ↗
               </button>
             </div></div>
             <div className="cal-popover-row"><Building2 size={14} /><div>
@@ -6668,7 +6714,7 @@ function SessionRow({
           </span>
         </div>
         <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
-        <small>{patient?.name ?? 'Unknown patient'}{patient?.gender ? ` · ${patient.gender}` : ''} · {clinicName(data.clinics, session.clinicId)}</small>
+        <small>{patient ? patientDisplayName(patient) : 'Unknown patient'}{patient?.gender ? ` · ${patient.gender}` : ''} · {clinicName(data.clinics, session.clinicId)}</small>
       </div>
       <div className="session-meta">
         <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>

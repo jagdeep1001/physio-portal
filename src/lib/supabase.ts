@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { fromDbScheduledAt, toDbScheduledAt } from './datetime';
 import { normalizeMoney, withLegacyPayments } from './payments';
-import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, PaymentAllocation, PaymentMethod, PaymentRecord, Profile, TherapySession } from '../types';
+import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, PaymentAllocation, PaymentMethod, PaymentRecord, Profile, Salutation, TherapySession } from '../types';
 
 const supabaseUrl      = import.meta.env.VITE_SUPABASE_URL      as string | undefined;
 const supabaseAnonKey  = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -37,6 +37,7 @@ type ProfileRow = {
 type PatientRow = {
   id: string;
   clinic_id: string | null;
+  salutation: Salutation | null;
   name: string;
   phone: string;
   date_of_birth: string;
@@ -140,10 +141,20 @@ export function mapProfile(row: ProfileRow): Profile {
 }
 
 export function mapPatient(row: PatientRow): Patient {
+  const cleanName = (row.name ?? '').trim();
+  const match = cleanName.match(/^(mr|mrs|ms|miss|dr)\.?\s+/i);
+  const inferredSalutation = match
+    ? (match[1].toLowerCase() === 'mr' ? 'Mr'
+      : match[1].toLowerCase() === 'mrs' ? 'Mrs'
+      : match[1].toLowerCase() === 'ms' ? 'Ms'
+      : match[1].toLowerCase() === 'miss' ? 'Miss'
+      : 'Dr') as Salutation
+    : '' as Salutation;
   return {
     id: row.id,
     clinicId: row.clinic_id,
-    name: row.name,
+    salutation: row.salutation ?? inferredSalutation,
+    name: cleanName.replace(/^(mr|mrs|ms|miss|dr)\.?\s+/i, '').trim(),
     phone: row.phone,
     dateOfBirth: row.date_of_birth ?? '',
     gender: row.gender,
@@ -295,7 +306,8 @@ export async function loadRemoteData(): Promise<AppData> {
 
 export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
   clinic_id:          patient.clinicId || null,
-  name:               patient.name,
+  salutation:         patient.salutation || '',
+  name:               patient.name.trim(),
   phone:              patient.phone,
   date_of_birth:      patient.dateOfBirth || null,
   gender:             patient.gender,

@@ -56,6 +56,7 @@ create table if not exists profiles (
 create table if not exists patients (
   id                 uuid primary key default gen_random_uuid(),
   clinic_id          uuid references clinics(id) on delete set null,
+  salutation         text not null default '',
   name               text not null,
   phone              text not null default '',
   date_of_birth      date,
@@ -157,6 +158,7 @@ on conflict (email) do nothing;
 -- ── Add signs/symptoms columns to existing DB (safe, idempotent) ────────────
 alter table patients add column if not exists signs     text not null default '';
 alter table patients add column if not exists symptoms  text not null default '';
+alter table patients add column if not exists salutation text not null default '';
 alter table patients add column if not exists patient_history text not null default '';
 alter table patients add column if not exists case_type       text not null default '';
 alter table patients add column if not exists condition       text not null default '';
