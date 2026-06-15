@@ -60,6 +60,7 @@ create table if not exists patients (
   name               text not null,
   phone              text not null default '',
   date_of_birth      date,
+  age                integer,
   gender             gender_type not null default 'Female',
   address            text not null default '',
   diagnosis          text not null default '',
@@ -162,6 +163,7 @@ alter table patients add column if not exists salutation text not null default '
 alter table patients add column if not exists patient_history text not null default '';
 alter table patients add column if not exists case_type       text not null default '';
 alter table patients add column if not exists condition       text not null default '';
+alter table patients add column if not exists age             integer;
 
 -- ── Allow home-visit patients/sessions without clinic assignment ────────────
 alter table patients alter column clinic_id drop not null;

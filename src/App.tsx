@@ -145,6 +145,7 @@ type Page =
   | 'expenses';
 
 type PatientDraft = Omit<Patient, 'id' | 'active'>;
+type SchedulePreset = { patientId?: string; sessionType?: SessionType; templateSessionId?: string };
 type ClinicDraft = Omit<Clinic, 'id' | 'active'>;
 
 const storageKey = 'physio-care-demo-data';
@@ -181,6 +182,7 @@ const emptyPatient = (clinicId: string | null): PatientDraft => ({
   name: '',
   phone: '',
   dateOfBirth: '',
+  age: '',
   gender: 'Female',
   address: '',
   signs: '',
@@ -226,6 +228,7 @@ function loadInitialData(): AppData {
           name: nameParts.name,
           primaryDoctorId: (p as Patient).primaryDoctorId ?? therapySessions.find((s) => s.patientId === (p as Patient).id)?.assignedStaffId ?? '',
           createdByStaffId: (p as Patient).createdByStaffId ?? '',
+          age: (p as Patient).age ?? '',
           reports: (p as Patient).reports ?? [],
           signs:         (p as Patient).signs         ?? '',
           symptoms:      (p as Patient).symptoms      ?? '',
@@ -357,6 +360,11 @@ function calculateAge(dateOfBirth: string) {
   return Math.abs(new Date(diff).getUTCFullYear() - 1970).toString();
 }
 
+function patientAgeValue(patient: Pick<Patient, 'dateOfBirth' | 'age'> | Pick<PatientDraft, 'dateOfBirth' | 'age'>) {
+  if (patient.dateOfBirth) return calculateAge(patient.dateOfBirth);
+  return patient.age?.trim() || '';
+}
+
 function statusLabel(status: SessionStatus) {
   return status === 'no_show' ? 'No show' : status[0].toUpperCase() + status.slice(1);
 }
@@ -379,7 +387,7 @@ export function App() {
   const [sessionLoading, setSessionLoading] = useState(true);
   const [page, setPage] = useState<Page>('dashboard');
   const [selectedPatientId, setSelectedPatientId] = useState('');
-  const [schedulePreset, setSchedulePreset] = useState<{ patientId?: string; sessionType?: SessionType }>({});
+  const [schedulePreset, setSchedulePreset] = useState<SchedulePreset>({});
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [authError, setAuthError] = useState('');
   const [systemNotice, setSystemNotice] = useState('');
@@ -1251,6 +1259,11 @@ export function App() {
     setPage(sessionType === 'home' ? 'homeVisits' : 'scheduleNew');
   };
 
+  const goToScheduleFromSession = (session: TherapySession) => {
+    setSchedulePreset({ patientId: session.patientId, sessionType: session.sessionType, templateSessionId: session.id });
+    setPage(session.sessionType === 'home' ? 'homeVisits' : 'scheduleNew');
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -1378,6 +1391,7 @@ export function App() {
             onChangeStatus={changeSessionStatus}
             onDeleteSession={deleteSession}
             onScheduleNew={() => { setSchedulePreset({}); setPage('scheduleNew'); }}
+            onScheduleFromSession={goToScheduleFromSession}
             onRecordSession={addSession}
           />
         )}
@@ -2378,6 +2392,7 @@ function PatientDetailView({
       name: nameParts.name,
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
+      age: patient.age ?? '',
       gender: patient.gender,
       address: patient.address,
       signs: patient.signs ?? '',
@@ -2451,6 +2466,7 @@ function PatientDetailView({
       name: nameParts.name,
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
+      age: patient.age ?? '',
       gender: patient.gender,
       address: patient.address,
       signs: patient.signs ?? '',
@@ -2528,7 +2544,7 @@ function PatientDetailView({
               <p className="pp-diagnosis">{patientCaseSummary(patient)}</p>
               <div className="pp-badges">
                 <span className="pp-badge">{patient.gender}</span>
-                <span className="pp-badge">{calculateAge(patient.dateOfBirth)} yrs</span>
+                {patientAgeValue(patient) && <span className="pp-badge">{patientAgeValue(patient)} yrs</span>}
                 <span className={`pp-badge pp-badge-${patient.active ? 'active' : 'inactive'}`}>
                   {patient.active ? 'Active' : 'Inactive'}
                 </span>
@@ -2616,8 +2632,14 @@ function PatientDetailView({
         </div>
         <div className="pp-info-card">
           <Calendar size={15} className="pp-info-icon" />
-          <span className="pp-info-label">Date of birth</span>
-          <span className="pp-info-value">{patient.dateOfBirth ? formatDate(patient.dateOfBirth) : '—'}</span>
+          <span className="pp-info-label">Age / DOB</span>
+          <span className="pp-info-value">
+            {patientAgeValue(patient)
+              ? patient.dateOfBirth
+                ? `${patientAgeValue(patient)} yrs · ${formatDate(patient.dateOfBirth)}`
+                : `${patientAgeValue(patient)} yrs`
+              : '—'}
+          </span>
         </div>
         <div className="pp-info-card">
           <Stethoscope size={15} className="pp-info-icon" />
@@ -2713,7 +2735,7 @@ function PatientDetailView({
                   clinicId: patient.clinicId, salutation: patient.salutation ?? '',
                   primaryDoctorId: patient.primaryDoctorId ?? '', createdByStaffId: patient.createdByStaffId ?? '',
                   name: patient.name, phone: patient.phone,
-                  dateOfBirth: patient.dateOfBirth, gender: patient.gender, address: patient.address,
+                  dateOfBirth: patient.dateOfBirth, age: patient.age ?? '', gender: patient.gender, address: patient.address,
                   signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
                   patientHistory: patient.patientHistory ?? '', caseType: patient.caseType ?? '',
                   condition: patient.condition ?? patient.homeVisitDetails?.condition ?? '',
@@ -2960,22 +2982,24 @@ function PatientDetailView({
                       <span className="revenue-badge est pp-session-amount">Est. {formatCurrency(session.amountCollected)}</span>
                     )}
                     <PaymentBadge session={session} payments={data.payments} />
-                    {session.status === 'scheduled' && (
+                    {(session.status === 'scheduled' || session.status === 'completed') && (
                       <div className="pp-session-actions">
                         <button
                           className="secondary-button icon-only"
-                          title="Edit scheduled session"
+                          title={session.status === 'completed' ? 'Edit completed session' : 'Edit scheduled session'}
                           onClick={() => setEditingSession(session)}
                         >
                           <ClipboardList size={12} />
                         </button>
-                        <button
-                          className="danger-button icon-only"
-                          title="Delete scheduled session"
-                          onClick={() => void onDeleteSession(session.id)}
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        {session.status === 'scheduled' && (
+                          <button
+                            className="danger-button icon-only"
+                            title="Delete scheduled session"
+                            onClick={() => void onDeleteSession(session.id)}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -3328,7 +3352,6 @@ function PatientForm({
     const checks = [
       Boolean(draft.name.trim()),
       Boolean(draft.phone.trim()),
-      Boolean(draft.dateOfBirth),
       isHomeOnlyPatient(draft) ? true : Boolean(draft.clinicId),
     ];
     return Math.round((checks.filter(Boolean).length / checks.length) * 100);
@@ -3496,8 +3519,8 @@ function PatientForm({
                     ) : (
                       <span className="pe-hero-badge clinic"><Building2 size={12} /> Clinic patient</span>
                     )}
-                    {draft.dateOfBirth && (
-                      <span className="pe-hero-badge">{calculateAge(draft.dateOfBirth)} yrs</span>
+                    {patientAgeValue(draft) && (
+                      <span className="pe-hero-badge">{patientAgeValue(draft)} yrs</span>
                     )}
                   </div>
                 </div>
@@ -3671,8 +3694,20 @@ function PatientForm({
             <input required type="tel" value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} placeholder="+91 …" />
           </label>
           <label>
-            Date of birth <span className="required">*</span>
-            <input required type="date" value={draft.dateOfBirth} onChange={(e) => setDraft({ ...draft, dateOfBirth: e.target.value })} />
+            Age
+            <input
+              type="number"
+              min="0"
+              max="130"
+              value={draft.dateOfBirth ? calculateAge(draft.dateOfBirth) : draft.age ?? ''}
+              onChange={(e) => setDraft({ ...draft, age: e.target.value, dateOfBirth: '' })}
+              placeholder="Enter age if DOB is unknown"
+              disabled={Boolean(draft.dateOfBirth)}
+            />
+          </label>
+          <label>
+            Date of birth
+            <input type="date" value={draft.dateOfBirth} onChange={(e) => setDraft({ ...draft, dateOfBirth: e.target.value, age: e.target.value ? '' : draft.age })} />
             {draft.dateOfBirth && (
               <span className="dob-age-hint">Age: <strong>{calculateAge(draft.dateOfBirth)} yrs</strong></span>
             )}
@@ -3951,7 +3986,7 @@ function PatientForm({
 // ─── Sessions View (list + actions) ──────────────────────────────────────────
 
 function SessionsView({
-  data, allClinics, profiles, onUpdateSession, onCompleteSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onScheduleNew, onRecordSession,
+  data, allClinics, profiles, onUpdateSession, onCompleteSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onScheduleNew, onScheduleFromSession, onRecordSession,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions' | 'payments'>;
   allClinics: Clinic[];
@@ -3963,6 +3998,7 @@ function SessionsView({
   onChangeStatus: (sessionId: string, status: SessionStatus) => void;
   onDeleteSession: (sessionId: string) => void;
   onScheduleNew: () => void;
+  onScheduleFromSession: (session: TherapySession) => void;
   onRecordSession: (session: Omit<TherapySession, 'id'>) => void;
 }) {
   const [completingId, setCompletingId] = useState<string | null>(null);
@@ -4173,6 +4209,9 @@ function SessionsView({
               {patientGroups.map(({ patient, patientId, sessions, total, scheduled, completed, cancelled, revenue, next }) => {
                 const isExpanded = expandedPatients.has(patientId);
                 const doctorName = patientDoctorName(patient, profiles) || sessionDoctorName(next ?? sessions[0], patient, profiles);
+                const scheduleTemplate = next ?? [...sessions]
+                  .filter((session) => session.status === 'scheduled' || session.status === 'completed')
+                  .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
                 return (
                   <div key={patientId} className="patient-session-group">
                     <div className="patient-group-header">
@@ -4215,6 +4254,16 @@ function SessionsView({
                           onClick={() => setInvoiceModal({ patientId, mode: 'period' })}
                         >
                           <FileText size={14} />
+                        </button>
+                      )}
+                      {patient && scheduleTemplate && (
+                        <button
+                          type="button"
+                          className="secondary-button patient-group-schedule-more-btn"
+                          title="Schedule more sessions for this patient"
+                          onClick={() => onScheduleFromSession(scheduleTemplate)}
+                        >
+                          <Plus size={14} /> Schedule more
                         </button>
                       )}
                       {scheduled >= 2 && (
@@ -4290,6 +4339,20 @@ function SessionsView({
                                       <PaymentBadge session={session} payments={data.payments} />
                                     </div>
                                     <div className="group-session-actions">
+                                      {(session.status === 'completed' || session.status === 'scheduled') && (
+                                        <>
+                                          <button className="secondary-button icon-only" title={session.status === 'completed' ? 'Edit completed session' : 'Edit session'} onClick={() => setEditingSession(session)}>
+                                            <FileText size={13} />
+                                          </button>
+                                          <button
+                                            className="secondary-button icon-only"
+                                            title="Schedule more using this session"
+                                            onClick={() => onScheduleFromSession(session)}
+                                          >
+                                            <Plus size={13} />
+                                          </button>
+                                        </>
+                                      )}
                                       {session.status === 'scheduled' && (
                                         <>
                                           <button className="primary-button icon-only" title="Mark complete"
@@ -4298,9 +4361,6 @@ function SessionsView({
                                               setCompletionData(completionFormFromSession(session, data.therapySessions));
                                             }}>
                                             <Check size={13} />
-                                          </button>
-                                          <button className="secondary-button icon-only" title="Edit session" onClick={() => setEditingSession(session)}>
-                                            <FileText size={13} />
                                           </button>
                                           <button className="ghost-button icon-only" title="No show" onClick={() => onChangeStatus(session.id, 'no_show')}>NS</button>
                                           <button className="ghost-button icon-only" title="Cancel" onClick={() => onChangeStatus(session.id, 'cancelled')}><X size={13} /></button>
@@ -4351,7 +4411,7 @@ function HomeVisitsView({
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions' | 'payments'>;
   staff: Profile[];
   currentUser: Profile;
-  preset: { patientId?: string; sessionType?: SessionType };
+  preset: SchedulePreset;
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
   onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
   onCompleteSession: (sessionId: string, updates: Partial<TherapySession>, paymentReceived: number | null) => void;
@@ -4668,9 +4728,7 @@ function HomeVisitsView({
             {groups.map(({ patient, patientId: gpId, sessions, total, scheduled, completed, missed, next }) => {
               const isOpen = expandedIds.has(gpId);
               const hvd = patient?.homeVisitDetails;
-              const age = patient?.dateOfBirth
-                ? `${Math.floor((Date.now() - new Date(patient.dateOfBirth).getTime()) / (365.25 * 24 * 3600 * 1000))} yrs`
-                : null;
+              const age = patient ? patientAgeValue(patient) : '';
               const doctorName = patientDoctorName(patient, staff) || sessionDoctorName(next ?? sessions[0], patient, staff);
 
               return (
@@ -4683,7 +4741,7 @@ function HomeVisitsView({
                       <div className="hv-card-name-row">
                         <span className="hv-card-name">{patient ? patientDisplayName(patient) : 'Unknown patient'}</span>
                         {patient?.gender && <span className="hv-detail-chip">{patient.gender}</span>}
-                        {age && <span className="hv-detail-chip">{age}</span>}
+                        {age && <span className="hv-detail-chip">{age} yrs</span>}
                         {patient?.caseType && <span className="hv-detail-chip hv-chip-condition">{patient.caseType}</span>}
                         {(patient?.condition || hvd?.condition) && <span className="hv-detail-chip hv-chip-condition">{patient?.condition || hvd?.condition}</span>}
                       </div>
@@ -4778,12 +4836,14 @@ function HomeVisitsView({
                             )}
                             <PaymentBadge session={session} payments={data.payments} />
                             <div className="hv-session-actions">
+                              {(session.status === 'completed' || session.status === 'scheduled') && (
+                                <button className="secondary-button icon-only" title={session.status === 'completed' ? 'Edit completed session' : 'Edit session'}
+                                  onClick={() => setEditingSession(session)}>
+                                  <ClipboardList size={12} />
+                                </button>
+                              )}
                               {session.status === 'scheduled' && (
                                 <>
-                                  <button className="secondary-button icon-only" title="Edit session"
-                                    onClick={() => setEditingSession(session)}>
-                                    <ClipboardList size={12} />
-                                  </button>
                                   <button className="primary-button icon-only" title="Mark complete"
                                     onClick={() => {
                                       setCompletingId(session.id);
@@ -5080,6 +5140,7 @@ function EditSessionModal({
     clinicDate:    sessionDateKey(session.scheduledAt),
     clinicTime:    snapToClinicVisitSlot(sessionTimeKey(session.scheduledAt)),
     notes:         session.notes,
+    treatmentNotes: session.treatmentNotes,
     amountCollected: session.amountCollected != null ? String(session.amountCollected) : '',
   });
 
@@ -5097,12 +5158,14 @@ function EditSessionModal({
       therapyLevel:    form.therapyLevel,
       scheduledAt,
       notes:           form.notes,
+      treatmentNotes:  form.treatmentNotes,
       amountCollected: form.amountCollected !== '' ? parseFloat(form.amountCollected) : null,
     });
   };
 
   const patient = data.patients.find((p) => p.id === session.patientId);
   const slotOptions = isHome ? HOME_VISIT_SLOTS : CLINIC_VISIT_SLOTS;
+  const isCompleted = session.status === 'completed';
 
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -5113,7 +5176,7 @@ function EditSessionModal({
             {isHome ? <Home size={18} /> : <Stethoscope size={18} />}
           </div>
           <div>
-            <h3 className="modal-title">Edit scheduled session</h3>
+            <h3 className="modal-title">{isCompleted ? 'Edit completed session' : 'Edit session'}</h3>
             <p className="modal-sub">
               {patient ? patientDisplayName(patient) : 'Unknown'}
               {lockSessionType === 'home' ? ' · Home visit' : lockSessionType === 'clinic' ? ' · Clinic' : ''}
@@ -5179,7 +5242,7 @@ function EditSessionModal({
             </div>
           </label>
           <label>
-            Estimated amount (₹)
+            {isCompleted ? 'Session fee (₹)' : 'Estimated amount (₹)'}
             <input
               type="number"
               min="0"
@@ -5187,6 +5250,15 @@ function EditSessionModal({
               value={form.amountCollected}
               onChange={(e) => set('amountCollected', e.target.value)}
               placeholder="Leave blank if unknown"
+            />
+          </label>
+          <label>
+            Treatment notes
+            <textarea
+              rows={3}
+              value={form.treatmentNotes}
+              onChange={(e) => set('treatmentNotes', e.target.value)}
+              placeholder={isCompleted ? 'Treatment notes for this completed session…' : 'Optional treatment notes…'}
             />
           </label>
           <label>
@@ -5427,28 +5499,31 @@ function ScheduleNewPage({
   staff: Profile[];
   currentUser: Profile;
   defaultClinicId: string;
-  preset: { patientId?: string; sessionType?: SessionType };
+  preset: SchedulePreset;
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
   onBack: () => void;
   onClearPreset: () => void;
 }) {
   const clinicPatients = data.patients.filter((p) => p.clinicId !== null);
-  const [patientId, setPatientId] = useState(preset.patientId ?? clinicPatients[0]?.id ?? '');
+  const templateSession = preset.templateSessionId
+    ? data.therapySessions.find((session) => session.id === preset.templateSessionId)
+    : undefined;
+  const [patientId, setPatientId] = useState(preset.patientId ?? templateSession?.patientId ?? clinicPatients[0]?.id ?? '');
   const sessionType: SessionType = 'clinic';
-  const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>('basic');
-  const [therapyType, setTherapyType] = useState('');
+  const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>(templateSession?.therapyLevel ?? 'basic');
+  const [therapyType, setTherapyType] = useState(templateSession?.therapyType ?? '');
   const [dualTherapy, setDualTherapy] = useState(false);
   const [therapyType2, setTherapyType2] = useState('');
   const [therapyLevel2, setTherapyLevel2] = useState<TherapyLevel>('basic');
   const [startTime2, setStartTime2] = useState('11:00');
-  const [assignedStaffId, setAssignedStaffId] = useState(currentUser.id);
-  const [notes, setNotes] = useState('');
-  const [amountPerSession, setAmountPerSession] = useState('');
+  const [assignedStaffId, setAssignedStaffId] = useState(templateSession?.assignedStaffId || currentUser.id);
+  const [notes, setNotes] = useState(templateSession?.notes ?? '');
+  const [amountPerSession, setAmountPerSession] = useState(templateSession?.amountCollected != null ? amountInputValue(templateSession.amountCollected) : '');
 
   // Scheduling config
   const [mode, setMode] = useState<ScheduleMode>('count');
-  const [startDate, setStartDate] = useState(todayStr);
-  const [startTime, setStartTime] = useState('09:00');
+  const [startDate, setStartDate] = useState(templateSession ? sessionDateKey(templateSession.scheduledAt) : todayStr);
+  const [startTime, setStartTime] = useState(templateSession ? sessionTimeKey(templateSession.scheduledAt) : '09:00');
   const [countConfig, setCountConfig] = useState({ count: 1, freqValue: 2, freqUnit: 'days' as FrequencyUnit });
   const [rangeConfig, setRangeConfig] = useState({ endDate: '', freqValue: 2, freqUnit: 'days' as FrequencyUnit });
 
@@ -5476,12 +5551,29 @@ function ScheduleNewPage({
   }, [preset.patientId]);
 
   useEffect(() => {
-    if (selectedPatient?.primaryDoctorId) {
+    if (!templateSession) return;
+    setPatientId(templateSession.patientId);
+    setTherapyType(templateSession.therapyType);
+    setTherapyLevel(templateSession.therapyLevel ?? 'basic');
+    setAssignedStaffId(templateSession.assignedStaffId || currentUser.id);
+    setNotes(templateSession.notes ?? '');
+    setAmountPerSession(templateSession.amountCollected != null ? amountInputValue(templateSession.amountCollected) : '');
+    setStartDate(sessionDateKey(templateSession.scheduledAt));
+    setStartTime(sessionTimeKey(templateSession.scheduledAt));
+    setDualTherapy(false);
+    setTherapyType2('');
+    setTherapyLevel2('basic');
+  }, [currentUser.id, templateSession]);
+
+  useEffect(() => {
+    if (templateSession?.assignedStaffId) {
+      setAssignedStaffId(templateSession.assignedStaffId);
+    } else if (selectedPatient?.primaryDoctorId) {
       setAssignedStaffId(selectedPatient.primaryDoctorId);
     } else {
       setAssignedStaffId(currentUser.id);
     }
-  }, [currentUser.id, selectedPatient?.primaryDoctorId]);
+  }, [currentUser.id, selectedPatient?.primaryDoctorId, templateSession?.assignedStaffId]);
 
   const previewDates = useMemo(
     () => generateDates(mode, startDate, startTime, countConfig, rangeConfig),
@@ -5525,7 +5617,10 @@ function ScheduleNewPage({
         </button>
         {preset.patientId && (
           <div className="preset-notice">
-            Pre-filled for {selectedPatient?.name ?? 'patient'}.{' '}
+            Scheduling more for {selectedPatient ? patientDisplayName(selectedPatient) : 'patient'}.
+            {templateSession
+              ? ` Copied ${formatTherapyTypeDisplay(templateSession.therapyType)} from ${formatDateTime(templateSession.scheduledAt)}.`
+              : ' Add another slot or future sessions.'}{' '}
             <button type="button" className="ghost-link" onClick={() => { onClearPreset(); setPatientId(clinicPatients[0]?.id ?? ''); }}>
               Clear
             </button>
@@ -6073,14 +6168,16 @@ function CalendarView({
             )}
           </div>
           <div className="cal-popover-actions">
+            {(popover.status === 'scheduled' || popover.status === 'completed') && (
+              <button
+                className="secondary-button"
+                onClick={() => { setEditingSession(popover); setPopover(null); }}
+              >
+                <ClipboardList size={14} /> {popover.status === 'completed' ? 'Edit completed' : 'Edit session'}
+              </button>
+            )}
             {popover.status === 'scheduled' && (
               <>
-                <button
-                  className="secondary-button"
-                  onClick={() => { setEditingSession(popover); setPopover(null); }}
-                >
-                  <ClipboardList size={14} /> Edit session
-                </button>
                 <button
                   className="danger-button"
                   onClick={() => { void onDeleteSession(popover.id); setPopover(null); }}

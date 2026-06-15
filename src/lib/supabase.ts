@@ -43,6 +43,7 @@ type PatientRow = {
   name: string;
   phone: string;
   date_of_birth: string;
+  age: string | number | null;
   gender: Patient['gender'];
   address: string;
   signs: string | null;
@@ -161,6 +162,7 @@ export function mapPatient(row: PatientRow): Patient {
     name: cleanName.replace(/^(mr|mrs|ms|miss|dr)\.?\s+/i, '').trim(),
     phone: row.phone,
     dateOfBirth: row.date_of_birth ?? '',
+    age: row.age != null ? String(row.age) : '',
     gender: row.gender,
     address: row.address ?? '',
     signs:            row.signs    ?? '',
@@ -316,6 +318,7 @@ export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
   name:               patient.name.trim(),
   phone:              patient.phone,
   date_of_birth:      patient.dateOfBirth || null,
+  age:                patient.age ? parseInt(patient.age, 10) : null,
   gender:             patient.gender,
   address:            patient.address,
   signs:              patient.signs ?? '',

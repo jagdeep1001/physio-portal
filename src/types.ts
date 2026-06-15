@@ -60,6 +60,7 @@ export interface Patient {
   name: string;
   phone: string;
   dateOfBirth: string;
+  age: string;
   gender: Gender;
   address: string;
   signs: string;
