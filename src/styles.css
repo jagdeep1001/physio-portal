@@ -1103,12 +1103,51 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
   margin-bottom: 12px;
 }
 .payment-form .primary-button { justify-self: end; }
+.payment-ledger-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+.payment-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.payment-form-head strong {
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+.payment-form-head small {
+  color: var(--muted);
+  text-align: right;
+  line-height: 1.35;
+}
+.payment-history-block {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
 .payment-history-list { display: grid; gap: 8px; }
 .payment-history-row {
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg);
+  background: #fff;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.payment-history-date {
+  width: 48px;
+  min-height: 52px;
+  border-color: #bfdbfe;
+  background: #eff6ff;
 }
 .payment-history-main { display: grid; gap: 8px; min-width: 0; }
 .payment-history-heading {
@@ -1194,6 +1233,8 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
   align-items: start;
 }
 .pp-body-col { display: flex; flex-direction: column; gap: 16px; }
+.pp-side-col { display: contents; }
+.pp-payments-panel { grid-column: 1 / -1; }
 .pp-section {
   margin: 0;
   border-radius: 14px;

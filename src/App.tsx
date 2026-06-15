@@ -228,6 +228,7 @@ function loadInitialData(): AppData {
           name: nameParts.name,
           primaryDoctorId: (p as Patient).primaryDoctorId ?? therapySessions.find((s) => s.patientId === (p as Patient).id)?.assignedStaffId ?? '',
           createdByStaffId: (p as Patient).createdByStaffId ?? '',
+          createdAt: (p as Patient).createdAt ?? '',
           age: (p as Patient).age ?? '',
           reports: (p as Patient).reports ?? [],
           signs:         (p as Patient).signs         ?? '',
@@ -391,6 +392,12 @@ export function App() {
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [authError, setAuthError] = useState('');
   const [systemNotice, setSystemNotice] = useState('');
+  const mainRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [page, selectedPatientId]);
 
   // Persist user ID to localStorage so the session survives a page refresh
   const signIn = (user: Profile) => {
@@ -424,6 +431,25 @@ export function App() {
           ? String((error as { message: unknown }).message)
           : 'Something went wrong while saving data.';
     setSystemNotice(message);
+  };
+
+  const missingPatientColumn = (error: unknown) => {
+    const message = typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message: unknown }).message)
+      : error instanceof Error
+        ? error.message
+        : '';
+    const match = message.match(/'([^']+)' column of 'patients'/);
+    return match?.[1] ?? '';
+  };
+
+  const patientRowWithoutMissingColumn = (row: Record<string, unknown>, column: string) => {
+    const next = { ...row };
+    delete next[column];
+    if (column === 'created_by_staff_id') delete next.primary_doctor_id;
+    if (column === 'primary_doctor_id') delete next.created_by_staff_id;
+    if (column === 'age') delete next.age;
+    return next;
   };
 
   // Restore session on mount
@@ -617,9 +643,17 @@ export function App() {
     };
     if (supabase) {
       try {
-        const q = editingId
-          ? await supabase.from('patients').update(toPatientRow(patientToSave)).eq('id', editingId)
-          : await supabase.from('patients').insert({ ...toPatientRow(patientToSave), id: newPatientId ?? createDbId(), active: true });
+        const row = toPatientRow(patientToSave);
+        let q = editingId
+          ? await supabase.from('patients').update(row).eq('id', editingId)
+          : await supabase.from('patients').insert({ ...row, id: newPatientId ?? createDbId(), active: true });
+        const missingColumn = q.error ? missingPatientColumn(q.error) : '';
+        if (q.error && missingColumn) {
+          const fallbackRow = patientRowWithoutMissingColumn(row, missingColumn);
+          q = editingId
+            ? await supabase.from('patients').update(fallbackRow).eq('id', editingId)
+            : await supabase.from('patients').insert({ ...fallbackRow, id: newPatientId ?? createDbId(), active: true });
+        }
         if (q.error) throw q.error;
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); }
@@ -629,7 +663,7 @@ export function App() {
       ...draftData,
       patients: editingId
         ? draftData.patients.map((item) => (item.id === editingId ? { ...item, ...patientToSave } : item))
-        : [...draftData.patients, { ...patientToSave, id: newPatientId ?? createId('patient'), active: true }],
+        : [...draftData.patients, { ...patientToSave, id: newPatientId ?? createId('patient'), active: true, createdAt: new Date().toISOString() }],
     }));
   };
 
@@ -1002,7 +1036,12 @@ export function App() {
     if (supabase) {
       try {
         // 1. Save patient homeVisitDetails
-        const pr = await supabase.from('patients').update(toPatientRow(updatedPatient)).eq('id', patientId);
+        const row = toPatientRow(updatedPatient);
+        let pr = await supabase.from('patients').update(row).eq('id', patientId);
+        const missingColumn = pr.error ? missingPatientColumn(pr.error) : '';
+        if (pr.error && missingColumn) {
+          pr = await supabase.from('patients').update(patientRowWithoutMissingColumn(row, missingColumn)).eq('id', patientId);
+        }
         if (pr.error) throw pr.error;
 
         // 2. Create or update session
@@ -1311,7 +1350,7 @@ export function App() {
         </div>
       </aside>
 
-      <main className="main">
+      <main className="main" ref={mainRef}>
         <header className="topbar">
           <div>
             <p className="eyebrow">{currentUser.role === 'admin' ? 'Global admin view' : 'Clinic staff view'}</p>
@@ -1503,7 +1542,7 @@ function AuthScreen({
         </div>
         <h1>One calm workspace for patients, therapies, and home visits.</h1>
         <div className="hero-stats">
-          <span><strong>3</strong> demo clinics</span>
+          <span><strong>3</strong>clinics</span>
           <span><strong>Role-based</strong> access</span>
           <span><strong>Clinic + Home</strong> sessions</span>
         </div>
@@ -2218,7 +2257,12 @@ function PatientsView({
       if (clinicFilter === 'home') return isHomeOnlyPatient(p);
       return p.clinicId === clinicFilter;
     })
-    .filter((p) => [p.name, p.phone, p.caseType, p.condition, p.diagnosis, p.patientHistory].join(' ').toLowerCase().includes(query.toLowerCase()));
+    .filter((p) => [p.name, p.phone, p.caseType, p.condition, p.diagnosis, p.patientHistory].join(' ').toLowerCase().includes(query.toLowerCase()))
+    .sort((a, b) => {
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
 
   return (
     <section className="panel">
@@ -2780,7 +2824,7 @@ function PatientDetailView({
         </div>
 
         {/* Right: reports + payments */}
-        <div className="pp-body-col">
+        <div className="pp-body-col pp-side-col">
           <section className="panel pp-section">
             <PanelTitle title="Reports & documents" subtitle={`${(patient.reports ?? []).length} attached`} />
             {(patient.reports ?? []).length === 0 ? (
@@ -2803,112 +2847,142 @@ function PatientDetailView({
             )}
           </section>
 
-          <section className="panel pp-section">
-            <PanelTitle title="Payments" subtitle="Advance credit, due balance and payment history" />
-            <div className="payment-summary-grid payment-summary-grid-4">
-              <div className="payment-summary-card received">
-                <span>Total received</span>
-                <strong>{formatCurrency(totalReceived)}</strong>
-              </div>
-              <div className="payment-summary-card applied">
-                <span>Applied to sessions</span>
-                <strong>{formatCurrency(totalApplied)}</strong>
-              </div>
-              <div className="payment-summary-card credit">
-                <span>Available credit</span>
-                <strong>{formatCurrency(credit)}</strong>
-              </div>
-              <div className="payment-summary-card due">
-                <span>Outstanding due</span>
-                <strong>{formatCurrency(due)}</strong>
-              </div>
-            </div>
-            <form className="payment-form" onSubmit={submitPayment}>
-              <div className="form-two-col">
-                <label>
-                  Amount received (₹)
-                  <input
-                    required
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={paymentDraft.amount}
-                    onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })}
-                    placeholder="0"
-                  />
-                </label>
-                <label>
-                  Date
-                  <input
-                    type="date"
-                    value={paymentDraft.paidAt}
-                    onChange={(e) => setPaymentDraft({ ...paymentDraft, paidAt: e.target.value })}
-                  />
-                </label>
-                <label>
-                  Method
-                  <select
-                    value={paymentDraft.method}
-                    onChange={(e) => setPaymentDraft({ ...paymentDraft, method: e.target.value as PaymentMethod })}
-                  >
-                    {PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}
-                  </select>
-                </label>
-                <label>
-                  Notes
-                  <input
-                    value={paymentDraft.notes}
-                    onChange={(e) => setPaymentDraft({ ...paymentDraft, notes: e.target.value })}
-                    placeholder="Reference, package, remarks..."
-                  />
-                </label>
-              </div>
-              <button className="primary-button" type="submit"><DollarSign size={14} /> Record payment</button>
-            </form>
-            {patientPayments.length === 0 ? (
-              <EmptyState message="No payments recorded yet." />
-            ) : (
-              <div className="payment-history-list">
-                {patientPayments.map((payment) => {
-                  const applied = allocatedTotal(payment);
-                  const remaining = Math.max(0, normalizeMoney(payment.amount) - applied);
-                  const rows = paymentAllocationRows(payment);
-                  return (
-                    <div key={payment.id} className="payment-history-row">
-                      <div className="payment-history-main">
-                        <div className="payment-history-heading">
-                          <div>
-                            <strong>{formatCurrency(normalizeMoney(payment.amount))}</strong>
-                            <small>{formatDate(payment.paidAt)} · {payment.method}</small>
-                          </div>
-                          <div className="payment-history-totals">
-                            <span className="payment-allocation-note">Applied {formatCurrency(applied)}</span>
-                            {remaining > 0 && <span className="payment-credit-note">Credit {formatCurrency(remaining)}</span>}
-                          </div>
-                        </div>
-                        {payment.notes && <small className="payment-history-notes">{payment.notes}</small>}
-                        {rows.length > 0 ? (
-                          <div className="payment-allocation-list">
-                            {rows.map(({ allocation, session }) => (
-                              <div key={`${payment.id}-${allocation.sessionId}`} className="payment-allocation-row">
-                                <span>
-                                  {session
-                                    ? `${formatDate(session.scheduledAt)} · ${formatTherapyTypeDisplay(session.therapyType)}`
-                                    : 'Removed session'}
-                                </span>
-                                <strong>{formatCurrency(normalizeMoney(allocation.amount))}</strong>
+          <section className="panel pp-section pp-sessions-panel pp-payments-panel">
+            <details className="pp-sessions-disclosure pp-payment-disclosure">
+              <summary>
+                <div className="pp-sessions-summary-head">
+                  <div>
+                    <h3>Payment ledger</h3>
+                    <p>{patientPayments.length} payments · {formatCurrency(due)} due · {formatCurrency(credit)} credit</p>
+                  </div>
+                  <span className="pp-expand-pill"><ChevronRight size={14} /> View ledger</span>
+                </div>
+                <div className="pp-session-summary-grid pp-payment-summary-grid">
+                  <div className="pp-session-summary-card payment-summary-card received">
+                    <Receipt size={15} />
+                    <span>Received</span>
+                    <strong>{formatCurrency(totalReceived)}</strong>
+                  </div>
+                  <div className="pp-session-summary-card payment-summary-card applied">
+                    <Check size={15} />
+                    <span>Applied</span>
+                    <strong>{formatCurrency(totalApplied)}</strong>
+                  </div>
+                  <div className="pp-session-summary-card payment-summary-card credit">
+                    <TrendingUp size={15} />
+                    <span>Credit</span>
+                    <strong>{formatCurrency(credit)}</strong>
+                  </div>
+                  <div className="pp-session-summary-card payment-summary-card due">
+                    <DollarSign size={15} />
+                    <span>Due</span>
+                    <strong>{formatCurrency(due)}</strong>
+                  </div>
+                </div>
+              </summary>
+              <div className="payment-ledger-body">
+                <form className="payment-form" onSubmit={submitPayment}>
+                  <div className="payment-form-head">
+                    <strong>Record payment</strong>
+                    <small>Advance or later payments auto-apply to oldest dues.</small>
+                  </div>
+                  <div className="form-two-col">
+                    <label>
+                      Amount received (₹)
+                      <input
+                        required
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={paymentDraft.amount}
+                        onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })}
+                        placeholder="0"
+                      />
+                    </label>
+                    <label>
+                      Date
+                      <input
+                        type="date"
+                        value={paymentDraft.paidAt}
+                        onChange={(e) => setPaymentDraft({ ...paymentDraft, paidAt: e.target.value })}
+                      />
+                    </label>
+                    <label>
+                      Method
+                      <select
+                        value={paymentDraft.method}
+                        onChange={(e) => setPaymentDraft({ ...paymentDraft, method: e.target.value as PaymentMethod })}
+                      >
+                        {PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      Notes
+                      <input
+                        value={paymentDraft.notes}
+                        onChange={(e) => setPaymentDraft({ ...paymentDraft, notes: e.target.value })}
+                        placeholder="Reference, package, remarks..."
+                      />
+                    </label>
+                  </div>
+                  <button className="primary-button" type="submit"><DollarSign size={14} /> Record payment</button>
+                </form>
+                <div className="payment-history-block">
+                  <div className="payment-form-head">
+                    <strong>Payment history</strong>
+                    <small>{patientPayments.length === 0 ? 'No payments recorded yet.' : 'Applied amounts and remaining credit'}</small>
+                  </div>
+                  {patientPayments.length === 0 ? (
+                    <EmptyState message="No payments recorded yet." />
+                  ) : (
+                    <div className="payment-history-list">
+                      {patientPayments.map((payment) => {
+                        const applied = allocatedTotal(payment);
+                        const remaining = Math.max(0, normalizeMoney(payment.amount) - applied);
+                        const rows = paymentAllocationRows(payment);
+                        return (
+                          <div key={payment.id} className="payment-history-row">
+                            <div className="pp-session-date payment-history-date">
+                              <span className="pp-session-day">{new Intl.DateTimeFormat('en', { day: 'numeric' }).format(parseAppDate(payment.paidAt))}</span>
+                              <span className="pp-session-mon">{new Intl.DateTimeFormat('en', { month: 'short' }).format(parseAppDate(payment.paidAt))}</span>
+                            </div>
+                            <div className="payment-history-main">
+                              <div className="payment-history-heading">
+                                <div>
+                                  <strong>{formatCurrency(normalizeMoney(payment.amount))}</strong>
+                                  <small>{payment.method}</small>
+                                </div>
+                                <div className="payment-history-totals">
+                                  <span className="payment-allocation-note">Applied {formatCurrency(applied)}</span>
+                                  {remaining > 0 && <span className="payment-credit-note">Credit {formatCurrency(remaining)}</span>}
+                                </div>
                               </div>
-                            ))}
+                              {payment.notes && <small className="payment-history-notes">{payment.notes}</small>}
+                              {rows.length > 0 ? (
+                                <div className="payment-allocation-list">
+                                  {rows.map(({ allocation, session }) => (
+                                    <div key={`${payment.id}-${allocation.sessionId}`} className="payment-allocation-row">
+                                      <span>
+                                        {session
+                                          ? `${formatDate(session.scheduledAt)} · ${formatTherapyTypeDisplay(session.therapyType)}`
+                                          : 'Removed session'}
+                                      </span>
+                                      <strong>{formatCurrency(normalizeMoney(allocation.amount))}</strong>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <small className="payment-history-notes">No session allocation yet. This amount is available as advance credit.</small>
+                              )}
+                            </div>
                           </div>
-                        ) : (
-                          <small className="payment-history-notes">No session allocation yet. This amount is available as advance credit.</small>
-                        )}
-                      </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                  )}
+                </div>
               </div>
-            )}
+            </details>
           </section>
         </div>
       </div>

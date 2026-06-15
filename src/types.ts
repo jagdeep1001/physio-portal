@@ -75,6 +75,7 @@ export interface Patient {
   complications: string;
   surgeries: string;
   active: boolean;
+  createdAt?: string;
   reports: PatientReport[];
   homeVisitDetails?: HomeVisitDetails;
 }

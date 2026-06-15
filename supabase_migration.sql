@@ -3,6 +3,8 @@
 --  Run this in: Supabase Dashboard → SQL Editor → New Query
 -- ═══════════════════════════════════════════════════════════
 
+create extension if not exists "pgcrypto";
+
 -- ── Enums (safe create) ────────────────────────────────────
 do $$ begin
   create type user_role as enum ('admin', 'staff');
@@ -57,6 +59,8 @@ create table if not exists patients (
   id                 uuid primary key default gen_random_uuid(),
   clinic_id          uuid references clinics(id) on delete set null,
   salutation         text not null default '',
+  primary_doctor_id  uuid references profiles(id) on delete set null,
+  created_by_staff_id uuid references profiles(id) on delete set null,
   name               text not null,
   phone              text not null default '',
   date_of_birth      date,
@@ -76,7 +80,9 @@ create table if not exists patients (
   surgeries          text not null default '',
   active             boolean not null default true,
   reports            jsonb not null default '[]',
-  home_visit_details jsonb
+  home_visit_details jsonb,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
 );
 
 -- ── therapy_sessions ───────────────────────────────────────
@@ -160,10 +166,14 @@ on conflict (email) do nothing;
 alter table patients add column if not exists signs     text not null default '';
 alter table patients add column if not exists symptoms  text not null default '';
 alter table patients add column if not exists salutation text not null default '';
+alter table patients add column if not exists primary_doctor_id uuid references profiles(id) on delete set null;
+alter table patients add column if not exists created_by_staff_id uuid references profiles(id) on delete set null;
 alter table patients add column if not exists patient_history text not null default '';
 alter table patients add column if not exists case_type       text not null default '';
 alter table patients add column if not exists condition       text not null default '';
 alter table patients add column if not exists age             integer;
+alter table patients add column if not exists created_at      timestamptz not null default now();
+alter table patients add column if not exists updated_at      timestamptz not null default now();
 
 -- ── Allow home-visit patients/sessions without clinic assignment ────────────
 alter table patients alter column clinic_id drop not null;
@@ -227,3 +237,6 @@ create index if not exists idx_equipment_clinic       on equipment(clinic_id);
 -- Ensure API roles can read/write (required for edit/delete via anon key)
 grant all on clinic_expenses to anon, authenticated, service_role;
 grant all on equipment       to anon, authenticated, service_role;
+
+-- Refresh PostgREST/Supabase REST schema cache after adding columns.
+notify pgrst, 'reload schema';

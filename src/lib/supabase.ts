@@ -58,6 +58,7 @@ type PatientRow = {
   complications: string | null;
   surgeries: string | null;
   active: boolean;
+  created_at: string | null;
   reports: PatientReport[] | null;
   home_visit_details: HomeVisitDetails | null;
 };
@@ -177,6 +178,7 @@ export function mapPatient(row: PatientRow): Patient {
     complications: row.complications ?? '',
     surgeries: row.surgeries ?? '',
     active: row.active,
+    createdAt: row.created_at ?? '',
     reports: row.reports ?? [],
     homeVisitDetails: row.home_visit_details
       ? {
