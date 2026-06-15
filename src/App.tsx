@@ -66,6 +66,7 @@ import type { InvoiceMode } from './lib/invoice';
 import { formatTherapyTypeDisplay, splitTherapyTypes, THERAPY_GROUPS, THERAPY_SEPARATOR } from './lib/therapy';
 import {
   allocatePatientCredit,
+  allocatedTotal,
   buildLegacyPayments,
   normalizeMoney,
   patientCredit,
@@ -175,6 +176,8 @@ const emptyHomeVisitDetails = (): HomeVisitDetails => ({
 const emptyPatient = (clinicId: string | null): PatientDraft => ({
   clinicId,
   salutation: '',
+  primaryDoctorId: '',
+  createdByStaffId: '',
   name: '',
   phone: '',
   dateOfBirth: '',
@@ -221,6 +224,8 @@ function loadInitialData(): AppData {
           ...p,
           salutation: nameParts.salutation,
           name: nameParts.name,
+          primaryDoctorId: (p as Patient).primaryDoctorId ?? therapySessions.find((s) => s.patientId === (p as Patient).id)?.assignedStaffId ?? '',
+          createdByStaffId: (p as Patient).createdByStaffId ?? '',
           reports: (p as Patient).reports ?? [],
           signs:         (p as Patient).signs         ?? '',
           symptoms:      (p as Patient).symptoms      ?? '',
@@ -331,6 +336,19 @@ function splitSalutation(rawName: string, storedSalutation?: Salutation | null) 
 function patientDisplayName(patient: Pick<Patient, 'name'> & Partial<Pick<Patient, 'salutation'>>) {
   const split = splitSalutation(patient.name, patient.salutation);
   return [split.salutation, split.name].filter(Boolean).join('. ') || patient.name;
+}
+
+function profileDisplayName(profiles: Profile[], id: string | undefined | null) {
+  if (!id) return '';
+  return profiles.find((profile) => profile.id === id)?.name ?? '';
+}
+
+function patientDoctorName(patient: Patient | undefined | null, profiles: Profile[]) {
+  return profileDisplayName(profiles, patient?.primaryDoctorId);
+}
+
+function sessionDoctorName(session: TherapySession | undefined | null, patient: Patient | undefined | null, profiles: Profile[]) {
+  return profileDisplayName(profiles, session?.assignedStaffId) || patientDoctorName(patient, profiles);
 }
 
 function calculateAge(dateOfBirth: string) {
@@ -535,7 +553,7 @@ export function App() {
     // Demo mode fallback
     const user = data.profiles.find((p) => p.email.toLowerCase() === normalized);
     if (!user || demoPasswords[normalized] !== password) {
-      setAuthError('Use the demo admin or staff account, or sign up as new staff.');
+      setAuthError('Incorrect email or password.');
       return;
     }
     if (user.status !== 'active') { setAuthError('This account is waiting for admin approval.'); return; }
@@ -581,11 +599,19 @@ export function App() {
 
   // ── Data handlers ──
   const savePatient = async (patient: PatientDraft, editingId: string | null, newPatientId?: string) => {
+    const existing = editingId ? data.patients.find((p) => p.id === editingId) : null;
+    const patientToSave: PatientDraft = {
+      ...patient,
+      primaryDoctorId: patient.primaryDoctorId || existing?.primaryDoctorId || currentUser?.id || '',
+      createdByStaffId: editingId
+        ? patient.createdByStaffId || existing?.createdByStaffId || currentUser?.id || ''
+        : patient.createdByStaffId || currentUser?.id || '',
+    };
     if (supabase) {
       try {
         const q = editingId
-          ? await supabase.from('patients').update(toPatientRow(patient)).eq('id', editingId)
-          : await supabase.from('patients').insert({ ...toPatientRow(patient), id: newPatientId ?? createDbId(), active: true });
+          ? await supabase.from('patients').update(toPatientRow(patientToSave)).eq('id', editingId)
+          : await supabase.from('patients').insert({ ...toPatientRow(patientToSave), id: newPatientId ?? createDbId(), active: true });
         if (q.error) throw q.error;
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); }
@@ -594,8 +620,8 @@ export function App() {
     persist((draftData) => ({
       ...draftData,
       patients: editingId
-        ? draftData.patients.map((item) => (item.id === editingId ? { ...item, ...patient } : item))
-        : [...draftData.patients, { ...patient, id: newPatientId ?? createId('patient'), active: true }],
+        ? draftData.patients.map((item) => (item.id === editingId ? { ...item, ...patientToSave } : item))
+        : [...draftData.patients, { ...patientToSave, id: newPatientId ?? createId('patient'), active: true }],
     }));
   };
 
@@ -661,6 +687,8 @@ export function App() {
   };
 
   const updateSession = async (sessionId: string, updates: Partial<TherapySession>) => {
+    const existingSession = data.therapySessions.find((s) => s.id === sessionId);
+    const shouldReallocate = 'status' in updates || 'amountCollected' in updates;
     if (supabase) {
       try {
         const row: Record<string, unknown> = {};
@@ -675,16 +703,30 @@ export function App() {
         if ('notes' in updates)         row.notes            = updates.notes;
         const update = await supabase.from('therapy_sessions').update(row).eq('id', sessionId);
         if (update.error) throw update.error;
+        if (existingSession && shouldReallocate) {
+          const nextSessions = data.therapySessions.map((s) =>
+            s.id === sessionId ? { ...s, ...updates } : s
+          );
+          const nextPayments = reallocatePatients([existingSession.patientId], nextSessions, data.payments);
+          await savePatientPayments(existingSession.patientId, nextPayments);
+        }
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); }
       return;
     }
-    persist((draftData) => ({
-      ...draftData,
-      therapySessions: draftData.therapySessions.map((s) =>
+    persist((draftData) => {
+      const draftExisting = draftData.therapySessions.find((s) => s.id === sessionId);
+      const therapySessions = draftData.therapySessions.map((s) =>
         s.id === sessionId ? { ...s, ...updates } : s
-      ),
-    }));
+      );
+      return {
+        ...draftData,
+        therapySessions,
+        payments: draftExisting && shouldReallocate
+          ? reallocatePatients([draftExisting.patientId], therapySessions, draftData.payments)
+          : draftData.payments,
+      };
+    });
   };
 
   const savePatientPayments = async (patientId: string, payments: PaymentRecord[]) => {
@@ -699,21 +741,12 @@ export function App() {
     }
   };
 
-  const removePaymentAllocations = async (sessionIds: string[]) => {
-    const idSet = new Set(sessionIds);
-    const touched = data.payments
-      .filter((payment) => payment.allocations.some((allocation) => idSet.has(allocation.sessionId)))
-      .map((payment) => ({
-        ...payment,
-        allocations: payment.allocations.filter((allocation) => !idSet.has(allocation.sessionId)),
-      }));
-    if (supabase) {
-      for (const payment of touched.filter((payment) => !payment.id.startsWith('legacy-payment-'))) {
-        const { id, ...rest } = payment;
-        const update = await supabase.from('patient_payments').update(toPaymentRow(rest)).eq('id', id);
-        if (update.error) throw update.error;
-      }
-    }
+  const reallocatePatients = (patientIds: string[], sessions: TherapySession[], payments: PaymentRecord[]) => {
+    const uniqueIds = Array.from(new Set(patientIds.filter(Boolean)));
+    return uniqueIds.reduce(
+      (nextPayments, patientId) => allocatePatientCredit(patientId, sessions, nextPayments),
+      payments
+    );
   };
 
   const recordPayment = async (payment: Omit<PaymentRecord, 'id' | 'createdAt' | 'allocations'>) => {
@@ -803,6 +836,11 @@ export function App() {
 
   const bulkUpdateSessions = async (items: { sessionId: string; updates: Partial<TherapySession> }[]) => {
     if (items.length === 0) return;
+    const itemMap = new Map(items.map((item) => [item.sessionId, item.updates]));
+    const shouldReallocate = items.some((item) => 'status' in item.updates || 'amountCollected' in item.updates);
+    const affectedPatientIds = data.therapySessions
+      .filter((session) => itemMap.has(session.id))
+      .map((session) => session.patientId);
     if (supabase) {
       try {
         for (const { sessionId, updates } of items) {
@@ -819,17 +857,37 @@ export function App() {
           const update = await supabase.from('therapy_sessions').update(row).eq('id', sessionId);
           if (update.error) throw update.error;
         }
+        if (shouldReallocate && affectedPatientIds.length > 0) {
+          const nextSessions = data.therapySessions.map((session) => {
+            const updates = itemMap.get(session.id);
+            return updates ? { ...session, ...updates } : session;
+          });
+          const nextPayments = reallocatePatients(affectedPatientIds, nextSessions, data.payments);
+          for (const patientId of Array.from(new Set(affectedPatientIds))) {
+            await savePatientPayments(patientId, nextPayments);
+          }
+        }
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); }
       return;
     }
-    persist((draftData) => ({
-      ...draftData,
-      therapySessions: draftData.therapySessions.map((s) => {
-        const item = items.find((i) => i.sessionId === s.id);
-        return item ? { ...s, ...item.updates } : s;
-      }),
-    }));
+    persist((draftData) => {
+      const draftItemMap = new Map(items.map((item) => [item.sessionId, item.updates]));
+      const draftAffectedPatientIds = draftData.therapySessions
+        .filter((session) => draftItemMap.has(session.id))
+        .map((session) => session.patientId);
+      const therapySessions = draftData.therapySessions.map((s) => {
+        const updates = draftItemMap.get(s.id);
+        return updates ? { ...s, ...updates } : s;
+      });
+      return {
+        ...draftData,
+        therapySessions,
+        payments: shouldReallocate
+          ? reallocatePatients(draftAffectedPatientIds, therapySessions, draftData.payments)
+          : draftData.payments,
+      };
+    });
   };
 
   const changeSessionStatus = (sessionId: string, status: SessionStatus) => {
@@ -844,47 +902,80 @@ export function App() {
     if (!window.confirm(`Delete scheduled ${visitLabel} on ${when}? This cannot be undone.`)) return;
     if (supabase) {
       try {
-        await removePaymentAllocations([sessionId]);
+        if (session) {
+          const nextSessions = data.therapySessions.filter((s) => s.id !== sessionId);
+          const clearedPayments = data.payments.map((payment) => ({
+            ...payment,
+            allocations: payment.allocations.filter((allocation) => allocation.sessionId !== sessionId),
+          }));
+          const nextPayments = reallocatePatients([session.patientId], nextSessions, clearedPayments);
+          await savePatientPayments(session.patientId, nextPayments);
+        }
         const d = await supabase.from('therapy_sessions').delete().eq('id', sessionId);
         if (d.error) throw d.error;
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); }
       return;
     }
-    persist((draftData) => ({
-      ...draftData,
-      therapySessions: draftData.therapySessions.filter((s) => s.id !== sessionId),
-      payments: draftData.payments.map((payment) => ({
+    persist((draftData) => {
+      const deletedSession = draftData.therapySessions.find((s) => s.id === sessionId);
+      const therapySessions = draftData.therapySessions.filter((s) => s.id !== sessionId);
+      const clearedPayments = draftData.payments.map((payment) => ({
         ...payment,
         allocations: payment.allocations.filter((allocation) => allocation.sessionId !== sessionId),
-      })),
-    }));
+      }));
+      return {
+        ...draftData,
+        therapySessions,
+        payments: deletedSession
+          ? reallocatePatients([deletedSession.patientId], therapySessions, clearedPayments)
+          : clearedPayments,
+      };
+    });
   };
 
   const bulkDeleteSessions = async (sessionIds: string[]) => {
     if (sessionIds.length === 0) return;
+    const idSet = new Set(sessionIds);
     const label = sessionIds.length === 1
       ? 'this scheduled session'
       : `${sessionIds.length} scheduled sessions`;
     if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
     if (supabase) {
       try {
-        await removePaymentAllocations(sessionIds);
+        const affectedPatientIds = data.therapySessions
+          .filter((session) => idSet.has(session.id))
+          .map((session) => session.patientId);
+        const nextSessions = data.therapySessions.filter((s) => !idSet.has(s.id));
+        const clearedPayments = data.payments.map((payment) => ({
+          ...payment,
+          allocations: payment.allocations.filter((allocation) => !idSet.has(allocation.sessionId)),
+        }));
+        const nextPayments = reallocatePatients(affectedPatientIds, nextSessions, clearedPayments);
+        for (const patientId of Array.from(new Set(affectedPatientIds))) {
+          await savePatientPayments(patientId, nextPayments);
+        }
         const d = await supabase.from('therapy_sessions').delete().in('id', sessionIds);
         if (d.error) throw d.error;
         await refreshRemoteData(); setSystemNotice('');
       } catch (error) { reportRemoteError(error); }
       return;
     }
-    const idSet = new Set(sessionIds);
-    persist((draftData) => ({
-      ...draftData,
-      therapySessions: draftData.therapySessions.filter((s) => !idSet.has(s.id)),
-      payments: draftData.payments.map((payment) => ({
+    persist((draftData) => {
+      const affectedPatientIds = draftData.therapySessions
+        .filter((session) => idSet.has(session.id))
+        .map((session) => session.patientId);
+      const therapySessions = draftData.therapySessions.filter((s) => !idSet.has(s.id));
+      const clearedPayments = draftData.payments.map((payment) => ({
         ...payment,
         allocations: payment.allocations.filter((allocation) => !idSet.has(allocation.sessionId)),
-      })),
-    }));
+      }));
+      return {
+        ...draftData,
+        therapySessions,
+        payments: reallocatePatients(affectedPatientIds, therapySessions, clearedPayments),
+      };
+    });
   };
 
   // ── Atomic: save homeVisitDetails + create/update TherapySession in one transaction ──
@@ -1241,6 +1332,7 @@ export function App() {
           <PatientsView
             data={scoped}
             allClinics={data.clinics}
+            profiles={data.profiles}
             onGoToAddPatient={() => setPage('patientEntry')}
             onOpenPatient={goToPatientDetail}
           />
@@ -1248,6 +1340,8 @@ export function App() {
         {page === 'patientEntry' && (
           <PatientEntryView
             clinics={currentUser.role === 'admin' ? data.clinics.filter((c) => c.active) : scoped.clinics}
+            staff={data.profiles}
+            currentUser={currentUser}
             defaultClinicId={defaultClinicId}
             onSavePatient={savePatient}
             onBack={() => setPage('patients')}
@@ -1290,6 +1384,7 @@ export function App() {
         {page === 'homeVisits' && (
           <HomeVisitsView
             data={scoped}
+            staff={data.profiles}
             currentUser={currentUser}
             preset={schedulePreset}
             onAddSession={addSession}
@@ -1375,8 +1470,8 @@ function AuthScreen({
   onLogin: (email: string, password: string) => void;
   onSignup: (form: SignupForm) => void;
 }) {
-  const [email, setEmail] = useState('admin@physiocare.local');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [signup, setSignup] = useState<SignupForm>({
     name: '', email: '', password: '', phone: '', title: 'Physiotherapist',
     clinicId: clinics[0]?.id ?? '',
@@ -1408,11 +1503,9 @@ function AuthScreen({
 
         {mode === 'login' ? (
           <form onSubmit={(e) => { e.preventDefault(); onLogin(email, password); }} className="form-grid">
-            <label>Email<input value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-            <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+            <label>Email<input required type="email" value={email} autoComplete="username" onChange={(e) => setEmail(e.target.value)} /></label>
+            <label>Password<input required type="password" value={password} autoComplete="current-password" onChange={(e) => setPassword(e.target.value)} /></label>
             <button className="primary-button" type="submit">Enter portal</button>
-            <p className="hint">Admin: admin@physiocare.local / admin123</p>
-            <p className="hint">Staff: staff@physiocare.local / staff123</p>
           </form>
         ) : (
           <form onSubmit={(e) => { e.preventDefault(); onSignup(signup); }} className="form-grid">
@@ -2094,10 +2187,11 @@ function HomeDashboard({
 // ─── Patients View ────────────────────────────────────────────────────────────
 
 function PatientsView({
-  data, allClinics, onGoToAddPatient, onOpenPatient,
+  data, allClinics, profiles, onGoToAddPatient, onOpenPatient,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions'>;
   allClinics: Clinic[];
+  profiles: Profile[];
   onGoToAddPatient: () => void;
   onOpenPatient: (patientId: string) => void;
 }) {
@@ -2144,6 +2238,7 @@ function PatientsView({
             const lastSession = sessions.sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
             const homeOnly = isHomeOnlyPatient(patient);
             const hasHomeSessions = sessions.some((s) => s.sessionType === 'home');
+            const doctorName = patientDoctorName(patient, profiles) || sessionDoctorName(lastSession, patient, profiles);
             return (
               <button key={patient.id} className="table-row patient-row" onClick={() => onOpenPatient(patient.id)}>
                 <span className={`patient-avatar${homeOnly ? ' patient-avatar-home' : ''}`}>{nameInitial(patient.name)}</span>
@@ -2153,7 +2248,7 @@ function PatientsView({
                     <span className="patient-gender-chip">{patient.gender}</span>
                     {homeOnly && <span className="home-badge-sm" title="Home only patient"><Home size={10} /></span>}
                   </strong>
-                  <small>{patientCaseSummary(patient)}</small>
+                  <small>{patientCaseSummary(patient)}{doctorName ? ` · Doctor: ${doctorName}` : ''}</small>
                 </span>
                 <span>
                   {homeOnly ? (
@@ -2185,14 +2280,20 @@ function PatientsView({
 // ─── Patient Entry (Add) ──────────────────────────────────────────────────────
 
 function PatientEntryView({
-  clinics, defaultClinicId, onSavePatient, onBack,
+  clinics, staff, currentUser, defaultClinicId, onSavePatient, onBack,
 }: {
   clinics: Clinic[];
+  staff: Profile[];
+  currentUser: Profile;
   defaultClinicId: string;
   onSavePatient: (patient: PatientDraft, editingId: string | null, newPatientId?: string) => void;
   onBack: () => void;
 }) {
-  const [draft, setDraft] = useState<PatientDraft>(() => emptyPatient(defaultClinicId));
+  const [draft, setDraft] = useState<PatientDraft>(() => ({
+    ...emptyPatient(defaultClinicId),
+    primaryDoctorId: currentUser.id,
+    createdByStaffId: currentUser.id,
+  }));
   const newPatientId = useRef(createDbId()).current;
 
   const submit = (e: FormEvent) => {
@@ -2213,6 +2314,8 @@ function PatientEntryView({
         draft={draft}
         setDraft={setDraft}
         clinics={clinics}
+        staff={staff}
+        currentUser={currentUser}
         storagePatientId={newPatientId}
         onSubmit={submit}
         onCancel={onBack}
@@ -2270,6 +2373,8 @@ function PatientDetailView({
     setDraft({
       clinicId: patient.clinicId,
       salutation: nameParts.salutation,
+      primaryDoctorId: patient.primaryDoctorId ?? '',
+      createdByStaffId: patient.createdByStaffId ?? '',
       name: nameParts.name,
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
@@ -2323,12 +2428,26 @@ function PatientDetailView({
     .sort((a, b) => b.paidAt.localeCompare(a.paidAt));
   const credit = patientCredit(patient.id, data.payments);
   const due = patientDue(patient.id, patientSessions, data.payments);
+  const totalReceived = patientPayments.reduce((sum, payment) => sum + normalizeMoney(payment.amount), 0);
+  const totalApplied = patientPayments.reduce((sum, payment) => sum + allocatedTotal(payment), 0);
+  const doctorName = patientDoctorName(patient, staff) || sessionDoctorName(nextSession ?? patientSessions[0], patient, staff);
+  const addedByName = profileDisplayName(staff, patient.createdByStaffId);
+
+  const paymentAllocationRows = (payment: PaymentRecord) =>
+    payment.allocations
+      .map((allocation) => {
+        const session = patientSessions.find((s) => s.id === allocation.sessionId);
+        return { allocation, session };
+      })
+      .sort((a, b) => (a.session?.scheduledAt ?? '').localeCompare(b.session?.scheduledAt ?? ''));
 
   const openEdit = () => {
     const nameParts = splitSalutation(patient.name, patient.salutation);
     setDraft({
       clinicId: patient.clinicId,
       salutation: nameParts.salutation,
+      primaryDoctorId: patient.primaryDoctorId ?? '',
+      createdByStaffId: patient.createdByStaffId ?? '',
       name: nameParts.name,
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
@@ -2413,6 +2532,12 @@ function PatientDetailView({
                 <span className={`pp-badge pp-badge-${patient.active ? 'active' : 'inactive'}`}>
                   {patient.active ? 'Active' : 'Inactive'}
                 </span>
+                {doctorName && (
+                  <span className="pp-badge"><UserCheck size={11} /> Doctor: {doctorName}</span>
+                )}
+                {addedByName && addedByName !== doctorName && (
+                  <span className="pp-badge"><ClipboardList size={11} /> Added by: {addedByName}</span>
+                )}
                 {homeVisitSessions.length > 0 && (
                   <span className="pp-badge pp-badge-home"><Home size={11} /> Home visits</span>
                 )}
@@ -2461,6 +2586,14 @@ function PatientDetailView({
 
       {/* ── Contact & info cards ── */}
       <div className="pp-info-grid">
+        <div className="pp-info-card pp-info-card-doctor">
+          <UserCheck size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Doctor / therapist</span>
+          <span className="pp-info-value">{doctorName || 'Not assigned'}</span>
+          {addedByName && addedByName !== doctorName && (
+            <small className="pp-info-subvalue">Added by {addedByName}</small>
+          )}
+        </div>
         <div className="pp-info-card">
           <Phone size={15} className="pp-info-icon" />
           <span className="pp-info-label">Phone</span>
@@ -2577,7 +2710,9 @@ function PatientDetailView({
                 const log   = hvd.homeSessionLog ?? [];
                 const notes = { ...(hvd.homeSessionNotes ?? {}) };
                 const buildPayload = (newHvd: HomeVisitDetails): PatientDraft => ({
-                  clinicId: patient.clinicId, salutation: patient.salutation ?? '', name: patient.name, phone: patient.phone,
+                  clinicId: patient.clinicId, salutation: patient.salutation ?? '',
+                  primaryDoctorId: patient.primaryDoctorId ?? '', createdByStaffId: patient.createdByStaffId ?? '',
+                  name: patient.name, phone: patient.phone,
                   dateOfBirth: patient.dateOfBirth, gender: patient.gender, address: patient.address,
                   signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
                   patientHistory: patient.patientHistory ?? '', caseType: patient.caseType ?? '',
@@ -2611,7 +2746,7 @@ function PatientDetailView({
                       : { action: 'create', session: {
                           patientId: patient.id, clinicId: null,
                           sessionType: 'home', therapyType: 'Home Visit', therapyLevel: 'basic',
-                          assignedStaffId: '', scheduledAt: buildLocalDateTime(date, '09:00'),
+                          assignedStaffId: patient.primaryDoctorId || currentUser.id, scheduledAt: buildLocalDateTime(date, '09:00'),
                           status: 'completed', completedAt: buildLocalDateTime(date, '09:00'),
                           notes: '', treatmentNotes: record.notes, amountCollected: record.amount,
                         }}
@@ -2622,11 +2757,41 @@ function PatientDetailView({
           )}
         </div>
 
-        {/* Right: reports + sessions */}
+        {/* Right: reports + payments */}
         <div className="pp-body-col">
           <section className="panel pp-section">
+            <PanelTitle title="Reports & documents" subtitle={`${(patient.reports ?? []).length} attached`} />
+            {(patient.reports ?? []).length === 0 ? (
+              <EmptyState message="No reports yet. Use Edit record to attach documents." />
+            ) : (
+              <div className="pp-reports-grid">
+                {(patient.reports ?? []).map((report) => (
+                  <div key={report.id} className="pp-report-card">
+                    <div className="pp-report-icon"><FileText size={20} /></div>
+                    <div className="pp-report-body">
+                      <strong>{report.title}</strong>
+                      <small>{formatDate(report.date)}</small>
+                      {report.fileName && <span className="pp-report-file">{report.fileName}</span>}
+                      {report.notes && <p className="pp-report-notes">{report.notes}</p>}
+                    </div>
+                    {report.fileUrl && <ReportDownloadButton report={report} />}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="panel pp-section">
             <PanelTitle title="Payments" subtitle="Advance credit, due balance and payment history" />
-            <div className="payment-summary-grid">
+            <div className="payment-summary-grid payment-summary-grid-4">
+              <div className="payment-summary-card received">
+                <span>Total received</span>
+                <strong>{formatCurrency(totalReceived)}</strong>
+              </div>
+              <div className="payment-summary-card applied">
+                <span>Applied to sessions</span>
+                <strong>{formatCurrency(totalApplied)}</strong>
+              </div>
               <div className="payment-summary-card credit">
                 <span>Available credit</span>
                 <strong>{formatCurrency(credit)}</strong>
@@ -2682,53 +2847,90 @@ function PatientDetailView({
               <EmptyState message="No payments recorded yet." />
             ) : (
               <div className="payment-history-list">
-                {patientPayments.map((payment) => (
-                  <div key={payment.id} className="payment-history-row">
-                    <div>
-                      <strong>{formatCurrency(normalizeMoney(payment.amount))}</strong>
-                      <small>{formatDate(payment.paidAt)} · {payment.method}</small>
-                      {payment.notes && <small>{payment.notes}</small>}
+                {patientPayments.map((payment) => {
+                  const applied = allocatedTotal(payment);
+                  const remaining = Math.max(0, normalizeMoney(payment.amount) - applied);
+                  const rows = paymentAllocationRows(payment);
+                  return (
+                    <div key={payment.id} className="payment-history-row">
+                      <div className="payment-history-main">
+                        <div className="payment-history-heading">
+                          <div>
+                            <strong>{formatCurrency(normalizeMoney(payment.amount))}</strong>
+                            <small>{formatDate(payment.paidAt)} · {payment.method}</small>
+                          </div>
+                          <div className="payment-history-totals">
+                            <span className="payment-allocation-note">Applied {formatCurrency(applied)}</span>
+                            {remaining > 0 && <span className="payment-credit-note">Credit {formatCurrency(remaining)}</span>}
+                          </div>
+                        </div>
+                        {payment.notes && <small className="payment-history-notes">{payment.notes}</small>}
+                        {rows.length > 0 ? (
+                          <div className="payment-allocation-list">
+                            {rows.map(({ allocation, session }) => (
+                              <div key={`${payment.id}-${allocation.sessionId}`} className="payment-allocation-row">
+                                <span>
+                                  {session
+                                    ? `${formatDate(session.scheduledAt)} · ${formatTherapyTypeDisplay(session.therapyType)}`
+                                    : 'Removed session'}
+                                </span>
+                                <strong>{formatCurrency(normalizeMoney(allocation.amount))}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <small className="payment-history-notes">No session allocation yet. This amount is available as advance credit.</small>
+                        )}
+                      </div>
                     </div>
-                    <span className="payment-allocation-note">
-                      Applied {formatCurrency(payment.allocations.reduce((sum, a) => sum + normalizeMoney(a.amount), 0))}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
+        </div>
+      </div>
 
-          {/* Reports */}
-          <section className="panel pp-section">
-            <PanelTitle title="Reports & documents" subtitle={`${(patient.reports ?? []).length} attached`} />
-            {(patient.reports ?? []).length === 0 ? (
-              <EmptyState message="No reports yet. Use Edit record to attach documents." />
-            ) : (
-              <div className="pp-reports-grid">
-                {(patient.reports ?? []).map((report) => (
-                  <div key={report.id} className="pp-report-card">
-                    <div className="pp-report-icon"><FileText size={20} /></div>
-                    <div className="pp-report-body">
-                      <strong>{report.title}</strong>
-                      <small>{formatDate(report.date)}</small>
-                      {report.fileName && <span className="pp-report-file">{report.fileName}</span>}
-                      {report.notes && <p className="pp-report-notes">{report.notes}</p>}
-                    </div>
-                    {report.fileUrl && <ReportDownloadButton report={report} />}
-                  </div>
-                ))}
+      <section className="panel pp-section pp-sessions-panel">
+        <details className="pp-sessions-disclosure">
+          <summary>
+            <div className="pp-sessions-summary-head">
+              <div>
+                <h3>Session summary</h3>
+                <p>{patientSessions.length} sessions · {completedSessions.length} completed · {scheduledSessions.length} scheduled</p>
               </div>
-            )}
-          </section>
-
-          {/* Session history */}
-          <section className="panel pp-section">
-            <PanelTitle title="Session history" subtitle={`${patientSessions.length} sessions · ${completedSessions.length} completed`} />
-            {patientSessions.length === 0 ? (
-              <EmptyState message="No sessions recorded yet." />
-            ) : (
-              <div className="pp-session-list">
-                {patientSessions.map((session) => (
+              <span className="pp-expand-pill"><ChevronRight size={14} /> View details</span>
+            </div>
+            <div className="pp-session-summary-grid">
+              <div className="pp-session-summary-card">
+                <CalendarDays size={15} />
+                <span>Total</span>
+                <strong>{patientSessions.length}</strong>
+              </div>
+              <div className="pp-session-summary-card">
+                <Check size={15} />
+                <span>Completed</span>
+                <strong>{completedSessions.length}</strong>
+              </div>
+              <div className="pp-session-summary-card">
+                <Activity size={15} />
+                <span>Scheduled</span>
+                <strong>{scheduledSessions.length}</strong>
+              </div>
+              <div className="pp-session-summary-card">
+                <Stethoscope size={15} />
+                <span>Mix</span>
+                <strong>{clinicSessions.length} / {homeVisitSessions.length}</strong>
+              </div>
+            </div>
+          </summary>
+          {patientSessions.length === 0 ? (
+            <EmptyState message="No sessions recorded yet." />
+          ) : (
+            <div className="pp-session-list">
+              {patientSessions.map((session) => {
+                const sessionDoctor = sessionDoctorName(session, patient, staff);
+                return (
                   <div key={session.id} className={`pp-session-item status-${session.status}`}>
                     <div className="pp-session-date">
                       <span className="pp-session-day">{new Intl.DateTimeFormat('en', { day: 'numeric' }).format(parseScheduledAt(session.scheduledAt))}</span>
@@ -2745,6 +2947,7 @@ function PatientDetailView({
                           : <span className="badge badge-teal"><Stethoscope size={10} /> Clinic</span>}
                         <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
                         <span className="pp-session-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</span>
+                        {sessionDoctor && <span className="pp-session-time"><UserCheck size={10} /> {sessionDoctor}</span>}
                       </div>
                       {session.treatmentNotes && (
                         <p className="pp-session-notes">{session.treatmentNotes}</p>
@@ -2776,12 +2979,12 @@ function PatientDetailView({
                       </div>
                     )}
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      </div>
+                );
+              })}
+            </div>
+          )}
+        </details>
+      </section>
 
       {/* Edit form modal */}
       {editing && (
@@ -2791,6 +2994,8 @@ function PatientDetailView({
             draft={draft}
             setDraft={setDraft}
             clinics={currentUser.role === 'admin' ? allClinics.filter((c) => c.active) : data.clinics}
+            staff={staff}
+            currentUser={currentUser}
             storagePatientId={patient.id}
             onSubmit={submit}
             onCancel={() => setEditing(false)}
@@ -3095,13 +3300,15 @@ function PatientFormSection({
 }
 
 function PatientForm({
-  title, draft, setDraft, clinics, storagePatientId, onSubmit, onCancel, editing,
+  title, draft, setDraft, clinics, staff, currentUser, storagePatientId, onSubmit, onCancel, editing,
   mode = 'compact',
 }: {
   title: string;
   draft: PatientDraft;
   setDraft: (d: PatientDraft) => void;
   clinics: Clinic[];
+  staff: Profile[];
+  currentUser: Profile;
   storagePatientId: string;
   onSubmit: (e: FormEvent) => void;
   onCancel: () => void;
@@ -3197,6 +3404,10 @@ function PatientForm({
   };
 
   const genderOptions: Patient['gender'][] = ['Female', 'Male', 'Other'];
+  const activeStaff = staff.filter((profile) => profile.status === 'active');
+  const doctorOptions = activeStaff.some((profile) => profile.id === currentUser.id)
+    ? activeStaff
+    : [currentUser, ...activeStaff];
   const caseListId = `case-options-${storagePatientId}`;
 
   const reportsBlock = (
@@ -3442,6 +3653,18 @@ function PatientForm({
               const next = splitSalutation(e.target.value, draft.salutation || undefined);
               setDraft({ ...draft, salutation: next.salutation, name: next.name });
             }} placeholder="Patient full name" />
+          </label>
+          <label>
+            Doctor / therapist <span className="required">*</span>
+            <select
+              required
+              value={draft.primaryDoctorId || currentUser.id}
+              onChange={(e) => setDraft({ ...draft, primaryDoctorId: e.target.value })}
+            >
+              {doctorOptions.map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.name} — {profile.title}</option>
+              ))}
+            </select>
           </label>
           <label>
             Phone <span className="required">*</span>
@@ -3949,6 +4172,7 @@ function SessionsView({
             <div className="patient-session-groups">
               {patientGroups.map(({ patient, patientId, sessions, total, scheduled, completed, cancelled, revenue, next }) => {
                 const isExpanded = expandedPatients.has(patientId);
+                const doctorName = patientDoctorName(patient, profiles) || sessionDoctorName(next ?? sessions[0], patient, profiles);
                 return (
                   <div key={patientId} className="patient-session-group">
                     <div className="patient-group-header">
@@ -3967,6 +4191,9 @@ function SessionsView({
                             <Building2 size={11} />
                             {clinicName(allClinics, patient?.clinicId ?? sessions[0]?.clinicId)}
                           </span>
+                          {doctorName && (
+                            <small><UserCheck size={11} /> Doctor: {doctorName}</small>
+                          )}
                           {next && <small>Next: {formatDateTime(next.scheduledAt)} · {formatTherapyTypeDisplay(next.therapyType)}</small>}
                         </div>
                         <div className="patient-group-stats">
@@ -4044,6 +4271,12 @@ function SessionsView({
                                         </small>
                                         <span className="group-session-meta-sep">·</span>
                                         <small className="session-slot-time"><Clock size={10} /> {formatSessionTime(session.scheduledAt)}</small>
+                                        {sessionDoctorName(session, patient, profiles) && (
+                                          <>
+                                            <span className="group-session-meta-sep">·</span>
+                                            <small><UserCheck size={10} /> Doctor: {sessionDoctorName(session, patient, profiles)}</small>
+                                          </>
+                                        )}
                                       </div>
                                       {session.treatmentNotes && <p className="clinical-note">{session.treatmentNotes}</p>}
                                     </div>
@@ -4113,9 +4346,10 @@ function SessionsView({
 // ─── Home Visits View (home-only scheduling + management) ─────────────────────
 
 function HomeVisitsView({
-  data, currentUser, preset, onAddSession, onUpdateSession, onCompleteSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
+  data, staff, currentUser, preset, onAddSession, onUpdateSession, onCompleteSession, onBulkUpdateSessions, onBulkDeleteSessions, onChangeStatus, onDeleteSession, onOpenPatient, onClearPreset,
 }: {
   data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions' | 'payments'>;
+  staff: Profile[];
   currentUser: Profile;
   preset: { patientId?: string; sessionType?: SessionType };
   onAddSession: (session: Omit<TherapySession, 'id'>) => void;
@@ -4148,6 +4382,8 @@ function HomeVisitsView({
   const [completionData, setCompletionData] = useState<CompletionFormData>(emptyCompletionForm);
   const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
   const [bulkEditTarget, setBulkEditTarget] = useState<BulkEditTarget | null>(null);
+  const selectedPatient = data.patients.find((p) => p.id === patientId);
+  const assignedStaffId = selectedPatient?.primaryDoctorId || currentUser.id;
 
   useEffect(() => {
     if (preset.patientId) {
@@ -4166,9 +4402,11 @@ function HomeVisitsView({
     const gap = Math.max(1, freqDays);
     const parsedAmount = amount ? parseFloat(amount) : null;
     const selectedPatient = data.patients.find((p) => p.id === patientId);
+    const doctorName = patientDoctorName(selectedPatient, staff) || currentUser.name;
     const totalSessions = dualTherapy ? count * 2 : count;
     const confirmLines = [
       `Schedule ${totalSessions} home visit${totalSessions !== 1 ? 's' : ''}${selectedPatient ? ` for ${selectedPatient.name}` : ''}?`,
+      `Doctor / therapist: ${doctorName}`,
       `Start: ${formatDate(startDate)} at ${formatVisitSlotLabel(startTime)}`,
       dualTherapy ? `Second slot: ${formatVisitSlotLabel(startTime2)}` : null,
       count > 1 ? `Repeat every ${gap} day${gap !== 1 ? 's' : ''} for ${count} visit day${count !== 1 ? 's' : ''}.` : null,
@@ -4179,7 +4417,7 @@ function HomeVisitsView({
       patientId,
       clinicId: null,
       sessionType: 'home' as const,
-      assignedStaffId: currentUser.id,
+      assignedStaffId,
       status: 'scheduled' as const,
       completedAt: null,
       notes,
@@ -4300,8 +4538,13 @@ function HomeVisitsView({
             <label>
               Patient
               <select required value={patientId} onChange={(e) => setPatientId(e.target.value)}>
-                {homePatients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {homePatients.map((p) => <option key={p.id} value={p.id}>{patientDisplayName(p)}</option>)}
               </select>
+              {selectedPatient && (
+                <small className="form-hint">
+                  Doctor / therapist: {patientDoctorName(selectedPatient, staff) || currentUser.name}
+                </small>
+              )}
             </label>
 
             <div className="dual-therapy-block home-dual-block">
@@ -4428,6 +4671,7 @@ function HomeVisitsView({
               const age = patient?.dateOfBirth
                 ? `${Math.floor((Date.now() - new Date(patient.dateOfBirth).getTime()) / (365.25 * 24 * 3600 * 1000))} yrs`
                 : null;
+              const doctorName = patientDoctorName(patient, staff) || sessionDoctorName(next ?? sessions[0], patient, staff);
 
               return (
                 <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}`}>
@@ -4447,6 +4691,9 @@ function HomeVisitsView({
                       <div className="hv-card-meta-row">
                         {patient?.phone && (
                           <span className="hv-meta-item"><Phone size={11} /> {patient.phone}</span>
+                        )}
+                        {doctorName && (
+                          <span className="hv-meta-item"><UserCheck size={11} /> Doctor: {doctorName}</span>
                         )}
                         {hvd?.homeVisitStartDate && (
                           <span className="hv-meta-item"><Calendar size={11} /> Since {hvd.homeVisitStartDate}</span>
@@ -4516,6 +4763,9 @@ function HomeVisitsView({
                             <div className="hv-session-info">
                               <span className="hv-session-type">{formatTherapyTypeDisplay(session.therapyType)}</span>
                               <span className="hv-session-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</span>
+                              {sessionDoctorName(session, patient, staff) && (
+                                <span className="hv-session-note">Doctor: {sessionDoctorName(session, patient, staff)}</span>
+                              )}
                               {session.notes && <span className="hv-session-note">{session.notes}</span>}
                             </div>
                           </div>
@@ -5205,6 +5455,8 @@ function ScheduleNewPage({
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [successCount, setSuccessCount] = useState(0);
+  const selectedPatient = data.patients.find((p) => p.id === patientId);
+  const selectedPatientDoctorName = patientDoctorName(selectedPatient, staff);
 
   const finishScheduling = useCallback(() => {
     setConfirmed(false);
@@ -5222,6 +5474,14 @@ function ScheduleNewPage({
   useEffect(() => {
     if (preset.patientId) setPatientId(preset.patientId);
   }, [preset.patientId]);
+
+  useEffect(() => {
+    if (selectedPatient?.primaryDoctorId) {
+      setAssignedStaffId(selectedPatient.primaryDoctorId);
+    } else {
+      setAssignedStaffId(currentUser.id);
+    }
+  }, [currentUser.id, selectedPatient?.primaryDoctorId]);
 
   const previewDates = useMemo(
     () => generateDates(mode, startDate, startTime, countConfig, rangeConfig),
@@ -5256,8 +5516,6 @@ function ScheduleNewPage({
     setConfirmed(true);
     onClearPreset();
   };
-
-  const selectedPatient = data.patients.find((p) => p.id === patientId);
 
   return (
     <div className="content-stack">
@@ -5317,8 +5575,13 @@ function ScheduleNewPage({
           <label>
             Patient
             <select required value={patientId} onChange={(e) => setPatientId(e.target.value)}>
-              {clinicPatients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {clinicPatients.map((p) => <option key={p.id} value={p.id}>{patientDisplayName(p)}</option>)}
             </select>
+            {selectedPatient && (
+              <small className="form-hint">
+                Doctor / therapist: {selectedPatientDoctorName || profileDisplayName(staff, assignedStaffId) || currentUser.name}
+              </small>
+            )}
           </label>
 
           {/* Therapy 1 */}
@@ -5551,7 +5814,13 @@ function ScheduleNewPage({
                   <Stethoscope size={12} />
                   Clinic session
                 </span>
-                {selectedPatient && <span className="badge badge-slate">{selectedPatient.name}</span>}
+                {selectedPatient && <span className="badge badge-slate">{patientDisplayName(selectedPatient)}</span>}
+                {(profileDisplayName(staff, assignedStaffId) || selectedPatientDoctorName) && (
+                  <span className="badge badge-slate">
+                    <UserCheck size={12} />
+                    {profileDisplayName(staff, assignedStaffId) || selectedPatientDoctorName}
+                  </span>
+                )}
                 {therapyType && <span className="badge badge-blue">{formatTherapyTypeDisplay(therapyType)}</span>}
                 {amountPerSession && (
                   <span className="badge badge-green">₹{amountPerSession} / session</span>
@@ -6732,7 +7001,7 @@ function SessionRow({
 }
 
 function PaymentBadge({ session, payments }: { session: TherapySession; payments: PaymentRecord[] }) {
-  if (session.status !== 'completed' && session.amountCollected === null) return null;
+  if (session.status !== 'completed') return null;
   const status = sessionPaymentStatus(session, payments);
   const paid = paidForSession(session.id, payments);
   const fee = sessionFee(session);

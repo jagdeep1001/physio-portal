@@ -55,6 +55,8 @@ export interface Patient {
   id: string;
   clinicId: string | null;
   salutation?: Salutation;
+  primaryDoctorId?: string;
+  createdByStaffId?: string;
   name: string;
   phone: string;
   dateOfBirth: string;

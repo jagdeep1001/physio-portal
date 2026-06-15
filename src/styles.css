@@ -1073,6 +1073,7 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
   gap: 10px;
   margin-bottom: 12px;
 }
+.payment-summary-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .payment-summary-card {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1088,6 +1089,8 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
   text-transform: uppercase;
 }
 .payment-summary-card strong { font-size: 1.05rem; color: var(--ink); }
+.payment-summary-card.received { border-color: #bfdbfe; background: #eff6ff; }
+.payment-summary-card.applied { border-color: #c4b5fd; background: #f5f3ff; }
 .payment-summary-card.credit { border-color: #99f6e4; background: #f0fdfa; }
 .payment-summary-card.due { border-color: #fecaca; background: #fef2f2; }
 .payment-form {
@@ -1102,22 +1105,66 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
 .payment-form .primary-button { justify-self: end; }
 .payment-history-list { display: grid; gap: 8px; }
 .payment-history-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
 }
-.payment-history-row div { display: grid; gap: 2px; min-width: 0; }
+.payment-history-main { display: grid; gap: 8px; min-width: 0; }
+.payment-history-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.payment-history-heading > div:first-child { display: grid; gap: 2px; min-width: 0; }
 .payment-history-row small { color: var(--muted); font-size: 0.74rem; }
+.payment-history-totals {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
 .payment-allocation-note {
   font-size: 0.74rem;
   color: var(--teal-dark);
   font-weight: 800;
   white-space: nowrap;
+}
+.payment-credit-note {
+  font-size: 0.72rem;
+  color: #1d4ed8;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.payment-history-notes {
+  display: block;
+  line-height: 1.4;
+}
+.payment-allocation-list {
+  display: grid;
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.payment-allocation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.76rem;
+  color: var(--slate);
+}
+.payment-allocation-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.payment-allocation-row strong {
+  color: var(--ink);
+  flex-shrink: 0;
 }
 .pp-info-card {
   background: var(--surface);
@@ -1130,19 +1177,27 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .pp-info-card:hover { border-color: var(--teal); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+.pp-info-card-doctor {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
 .pp-info-icon { color: var(--teal); margin-bottom: 2px; }
 .pp-info-label { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 .pp-info-value { font-size: 0.85rem; color: var(--ink); font-weight: 500; line-height: 1.4; word-break: break-word; }
+.pp-info-subvalue { font-size: 0.72rem; color: var(--muted); line-height: 1.35; }
 
-/* Two-column body */
+/* Detail body */
 .pp-body-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
   gap: 16px;
   align-items: start;
 }
 .pp-body-col { display: flex; flex-direction: column; gap: 16px; }
-.pp-section { margin: 0; }
+.pp-section {
+  margin: 0;
+  border-radius: 14px;
+}
 
 /* Clinical blocks */
 .pp-clinical-grid {
@@ -1281,15 +1336,99 @@ button.cal-row-value.ghost-link:hover { text-decoration: underline; }
 .pp-session-item.status-cancelled .pp-session-date,
 .pp-session-item.status-no_show .pp-session-date { opacity: 0.6; }
 
+.pp-sessions-panel { padding: 0; overflow: hidden; }
+.pp-sessions-disclosure { display: block; }
+.pp-sessions-disclosure summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 18px 20px;
+}
+.pp-sessions-disclosure summary::-webkit-details-marker { display: none; }
+.pp-sessions-summary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.pp-sessions-summary-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--ink);
+}
+.pp-sessions-summary-head p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+.pp-expand-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--slate);
+  font-size: 0.76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.pp-sessions-disclosure[open] .pp-expand-pill svg { transform: rotate(90deg); }
+.pp-session-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.pp-session-summary-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  align-items: center;
+}
+.pp-session-summary-card svg {
+  grid-row: span 2;
+  color: var(--teal);
+}
+.pp-session-summary-card span {
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pp-session-summary-card strong {
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+.pp-sessions-disclosure > .pp-session-list,
+.pp-sessions-disclosure > .empty-state {
+  border-top: 1px solid var(--border);
+  padding: 8px 20px 14px;
+}
+
 @media (max-width: 960px) {
   .pp-body-grid { grid-template-columns: 1fr; }
   .pp-info-grid { grid-template-columns: repeat(2, 1fr); }
+  .payment-summary-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pp-session-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pp-hero-actions { flex-direction: row; width: 100%; }
   .pp-hero-actions button { flex: 1; }
 }
 @media (max-width: 600px) {
   .pp-info-grid { grid-template-columns: 1fr; }
   .pp-clinical-grid { grid-template-columns: 1fr; }
+  .payment-summary-grid,
+  .payment-summary-grid-4 { grid-template-columns: 1fr; }
+  .payment-history-heading,
+  .payment-allocation-row { align-items: flex-start; flex-direction: column; }
+  .payment-history-totals { align-items: flex-start; }
+  .payment-allocation-row span { white-space: normal; }
+  .pp-session-summary-grid { grid-template-columns: 1fr; }
+  .pp-sessions-summary-head { flex-direction: column; }
   .pp-stats-strip { flex-direction: column; }
   .pp-stat { border-right: none; border-bottom: 1px solid var(--border); }
   .pp-stat:last-child { border-bottom: none; }

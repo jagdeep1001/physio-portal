@@ -25,6 +25,8 @@ create table if not exists public.patients (
   id uuid primary key default gen_random_uuid(),
   clinic_id uuid not null references public.clinics(id),
   salutation text not null default '',
+  primary_doctor_id uuid references public.profiles(id) on delete set null,
+  created_by_staff_id uuid references public.profiles(id) on delete set null,
   name text not null,
   phone text not null default '',
   date_of_birth date,
@@ -43,6 +45,8 @@ create table if not exists public.patients (
 );
 
 alter table public.patients add column if not exists salutation text not null default '';
+alter table public.patients add column if not exists primary_doctor_id uuid references public.profiles(id) on delete set null;
+alter table public.patients add column if not exists created_by_staff_id uuid references public.profiles(id) on delete set null;
 
 create table if not exists public.visits (
   id uuid primary key default gen_random_uuid(),

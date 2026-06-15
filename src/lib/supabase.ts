@@ -38,6 +38,8 @@ type PatientRow = {
   id: string;
   clinic_id: string | null;
   salutation: Salutation | null;
+  primary_doctor_id: string | null;
+  created_by_staff_id: string | null;
   name: string;
   phone: string;
   date_of_birth: string;
@@ -154,6 +156,8 @@ export function mapPatient(row: PatientRow): Patient {
     id: row.id,
     clinicId: row.clinic_id,
     salutation: row.salutation ?? inferredSalutation,
+    primaryDoctorId: row.primary_doctor_id ?? '',
+    createdByStaffId: row.created_by_staff_id ?? '',
     name: cleanName.replace(/^(mr|mrs|ms|miss|dr)\.?\s+/i, '').trim(),
     phone: row.phone,
     dateOfBirth: row.date_of_birth ?? '',
@@ -307,6 +311,8 @@ export async function loadRemoteData(): Promise<AppData> {
 export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
   clinic_id:          patient.clinicId || null,
   salutation:         patient.salutation || '',
+  primary_doctor_id:  patient.primaryDoctorId || null,
+  created_by_staff_id: patient.createdByStaffId || null,
   name:               patient.name.trim(),
   phone:              patient.phone,
   date_of_birth:      patient.dateOfBirth || null,

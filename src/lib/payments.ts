@@ -27,9 +27,10 @@ export function allocatedTotal(payment: PaymentRecord): number {
 }
 
 export function patientCredit(patientId: string, payments: PaymentRecord[]): number {
-  return payments
+  const credit = payments
     .filter((payment) => payment.patientId === patientId)
     .reduce((sum, payment) => sum + normalizeMoney(payment.amount) - allocatedTotal(payment), 0);
+  return Math.max(0, credit);
 }
 
 export function sessionBalance(session: TherapySession, payments: PaymentRecord[]): number {
@@ -39,10 +40,11 @@ export function sessionBalance(session: TherapySession, payments: PaymentRecord[
 export function sessionPaymentStatus(session: TherapySession, payments: PaymentRecord[]): PaymentStatus {
   const fee = sessionFee(session);
   if (fee <= 0) return 'no_charge';
+  if (session.status !== 'completed') return 'credit';
   const paid = paidForSession(session.id, payments);
   if (paid >= fee) return 'paid';
   if (paid > 0) return 'partial';
-  return session.status === 'completed' ? 'due' : 'due';
+  return 'due';
 }
 
 export function patientDue(patientId: string, sessions: TherapySession[], payments: PaymentRecord[]): number {
@@ -72,7 +74,10 @@ export function allocatePatientCredit(
 
   const nextPayments = payments.map((payment) => ({
     ...payment,
-    allocations: payment.allocations.map((allocation) => ({ ...allocation })),
+    amount: normalizeMoney(payment.amount),
+    allocations: payment.patientId === patientId
+      ? []
+      : payment.allocations.map((allocation) => ({ ...allocation, amount: normalizeMoney(allocation.amount) })),
   }));
 
   const patientPayments = nextPayments
@@ -80,8 +85,7 @@ export function allocatePatientCredit(
     .sort((a, b) => a.paidAt.localeCompare(b.paidAt) || a.createdAt.localeCompare(b.createdAt));
 
   for (const payment of patientPayments) {
-    payment.amount = normalizeMoney(payment.amount);
-    let remaining = Math.max(0, payment.amount - allocatedTotal(payment));
+    let remaining = normalizeMoney(payment.amount);
     if (remaining <= 0) continue;
 
     for (const session of orderedSessions) {
