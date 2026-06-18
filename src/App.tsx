@@ -636,6 +636,7 @@ export function App() {
     const existing = editingId ? data.patients.find((p) => p.id === editingId) : null;
     const patientToSave: PatientDraft = {
       ...patient,
+      name: patient.name.trim(),
       primaryDoctorId: patient.primaryDoctorId || existing?.primaryDoctorId || currentUser?.id || '',
       createdByStaffId: editingId
         ? patient.createdByStaffId || existing?.createdByStaffId || currentUser?.id || ''
@@ -3747,8 +3748,7 @@ function PatientForm({
           <label>
             Full name <span className="required">*</span>
             <input required value={draft.name} onChange={(e) => {
-              const next = splitSalutation(e.target.value, draft.salutation || undefined);
-              setDraft({ ...draft, salutation: next.salutation, name: next.name });
+              setDraft({ ...draft, name: e.target.value });
             }} placeholder="Patient full name" />
           </label>
           <label>
@@ -4286,6 +4286,7 @@ function SessionsView({
                 const scheduleTemplate = next ?? [...sessions]
                   .filter((session) => session.status === 'scheduled' || session.status === 'completed')
                   .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
+                const bulkEditableSessions = sessions.filter((s) => s.status === 'scheduled' || s.status === 'completed');
                 return (
                   <div key={patientId} className="patient-session-group">
                     <div className="patient-group-header">
@@ -4340,18 +4341,18 @@ function SessionsView({
                           <Plus size={14} /> Schedule more
                         </button>
                       )}
-                      {scheduled >= 2 && (
+                      {bulkEditableSessions.length >= 2 && (
                         <button
                           type="button"
                           className="secondary-button patient-group-bulk-btn"
-                          title="Bulk edit all scheduled sessions"
+                          title="Bulk edit scheduled and completed sessions"
                           onClick={() => setBulkEditTarget({
                             patientName: patient ? patientDisplayName(patient) : 'Patient',
                             sessionType: 'clinic',
-                            sessions: sessions.filter((s) => s.status === 'scheduled'),
+                            sessions: bulkEditableSessions,
                           })}
                         >
-                          <ClipboardList size={14} /> Bulk edit ({scheduled})
+                          <ClipboardList size={14} /> Bulk edit ({bulkEditableSessions.length})
                         </button>
                       )}
                     </div>
@@ -4804,6 +4805,7 @@ function HomeVisitsView({
               const hvd = patient?.homeVisitDetails;
               const age = patient ? patientAgeValue(patient) : '';
               const doctorName = patientDoctorName(patient, staff) || sessionDoctorName(next ?? sessions[0], patient, staff);
+              const bulkEditableSessions = sessions.filter((s) => s.status === 'scheduled' || s.status === 'completed');
 
               return (
                 <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}`}>
@@ -4853,21 +4855,21 @@ function HomeVisitsView({
 
                     {/* Controls */}
                     <div className="hv-card-controls">
-                      {scheduled >= 2 && (
+                      {bulkEditableSessions.length >= 2 && (
                         <button
                           type="button"
                           className="secondary-button hv-bulk-edit-btn"
-                          title="Bulk edit all scheduled visits"
+                          title="Bulk edit scheduled and completed visits"
                           onClick={(e) => {
                             e.stopPropagation();
                             setBulkEditTarget({
                               patientName: patient ? patientDisplayName(patient) : 'Patient',
                               sessionType: 'home',
-                              sessions: sessions.filter((s) => s.status === 'scheduled'),
+                              sessions: bulkEditableSessions,
                             });
                           }}
                         >
-                          <ClipboardList size={13} /> Bulk edit
+                          <ClipboardList size={13} /> Bulk edit ({bulkEditableSessions.length})
                         </button>
                       )}
                       <button className="ghost-button icon-only" title="Open patient record"
@@ -4963,6 +4965,7 @@ type BulkEditForm = {
   therapyType: string;
   therapyLevel: '' | TherapyLevel;
   amountCollected: string;
+  treatmentNotes: string;
   notes: string;
 };
 
@@ -4972,6 +4975,7 @@ const emptyBulkEditForm = (): BulkEditForm => ({
   therapyType: '',
   therapyLevel: '',
   amountCollected: '',
+  treatmentNotes: '',
   notes: '',
 });
 
@@ -4993,6 +4997,7 @@ function buildBulkSessionUpdates(session: TherapySession, form: BulkEditForm): P
   if (form.therapyType.trim()) updates.therapyType = form.therapyType.trim();
   if (form.therapyLevel) updates.therapyLevel = form.therapyLevel;
   if (form.amountCollected !== '') updates.amountCollected = parseFloat(form.amountCollected);
+  if (form.treatmentNotes !== '') updates.treatmentNotes = form.treatmentNotes;
   if (form.notes !== '') updates.notes = form.notes;
   return updates;
 }
@@ -5047,7 +5052,7 @@ function BulkEditSessionsModal({
             {isHome ? <Home size={18} /> : <Stethoscope size={18} />}
           </div>
           <div>
-            <h3 className="modal-title">Bulk edit scheduled sessions</h3>
+            <h3 className="modal-title">Bulk edit sessions</h3>
             <p className="modal-sub">
               {target.patientName} · {selectedSessions.length} of {sorted.length} selected
             </p>
@@ -5056,7 +5061,7 @@ function BulkEditSessionsModal({
         </div>
         <div className="modal-body">
           <p className="bulk-edit-hint">
-            Select the scheduled sessions first, then fill only the fields you want to change. Blank fields are left unchanged.
+            Select the sessions first, then fill only the fields you want to change. Blank fields are left unchanged.
           </p>
 
           <div className="bulk-session-picker">
@@ -5090,8 +5095,8 @@ function BulkEditSessionsModal({
                   <span>
                     <strong>{formatSessionDateTime(session.scheduledAt)}</strong>
                     <small>
-                      {formatTherapyTypeDisplay(session.therapyType)}
-                      {session.amountCollected !== null ? ` · Est. ${formatCurrency(session.amountCollected)}` : ''}
+                      {statusLabel(session.status)} · {formatTherapyTypeDisplay(session.therapyType)}
+                      {session.amountCollected !== null ? ` · ${session.status === 'completed' ? 'Fee' : 'Est.'} ${formatCurrency(session.amountCollected)}` : ''}
                     </small>
                   </span>
                 </label>
@@ -5137,7 +5142,7 @@ function BulkEditSessionsModal({
           </label>
 
           <label>
-            Estimated amount (₹)
+            Session fee / estimated amount (₹)
             <input
               type="number"
               min="0"
@@ -5145,6 +5150,16 @@ function BulkEditSessionsModal({
               value={form.amountCollected}
               onChange={(e) => set('amountCollected', e.target.value)}
               placeholder="Leave blank to keep current"
+            />
+          </label>
+
+          <label>
+            Treatment notes
+            <textarea
+              rows={2}
+              value={form.treatmentNotes}
+              onChange={(e) => set('treatmentNotes', e.target.value)}
+              placeholder="Leave blank to keep current treatment notes"
             />
           </label>
 
