@@ -160,7 +160,7 @@ const CASE_OPTIONS = [
   'Posture correction',
   'Home care',
 ];
-const SALUTATION_OPTIONS: Salutation[] = ['Mr', 'Mrs', 'Ms', 'Miss', 'Dr'];
+const SALUTATION_OPTIONS: Salutation[] = ['', 'Mr', 'Mrs', 'Ms', 'Miss', 'Dr'];
 const SALUTATION_PATTERN = /^(mr|mrs|ms|miss|dr)\.?\s+/i;
 
 const emptyHomeVisitDetails = (): HomeVisitDetails => ({
@@ -3742,7 +3742,7 @@ function PatientForm({
           <label>
             Salutation <span className="required">*</span>
             <select required value={draft.salutation ?? ''} onChange={(e) => setDraft({ ...draft, salutation: e.target.value as Salutation })}>
-              {SALUTATION_OPTIONS.map((value) => <option key={value} value={value}>{value || 'None'}</option>)}
+              {SALUTATION_OPTIONS.map((value) => <option key={value || 'blank'} value={value}>{value || 'Select salutation'}</option>)}
             </select>
           </label>
           <label>
