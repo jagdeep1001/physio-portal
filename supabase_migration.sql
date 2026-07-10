@@ -65,6 +65,7 @@ create table if not exists patients (
   phone              text not null default '',
   date_of_birth      date,
   age                integer,
+  occupation         text not null default '',
   gender             gender_type not null default 'Female',
   address            text not null default '',
   diagnosis          text not null default '',
@@ -172,6 +173,7 @@ alter table patients add column if not exists patient_history text not null defa
 alter table patients add column if not exists case_type       text not null default '';
 alter table patients add column if not exists condition       text not null default '';
 alter table patients add column if not exists age             integer;
+alter table patients add column if not exists occupation      text not null default '';
 alter table patients add column if not exists created_at      timestamptz not null default now();
 alter table patients add column if not exists updated_at      timestamptz not null default now();
 

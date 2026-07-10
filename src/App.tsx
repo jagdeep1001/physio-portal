@@ -162,6 +162,8 @@ const CASE_OPTIONS = [
 ];
 const SALUTATION_OPTIONS: Salutation[] = ['', 'Mr', 'Mrs', 'Ms', 'Miss', 'Dr'];
 const SALUTATION_PATTERN = /^(mr|mrs|ms|miss|dr)\.?\s+/i;
+const REFERRAL_SOURCE_OPTIONS = ['Dr. Naveen Sahu', 'Dr. G.S. Goyal', 'Dr. Saheb Jangra'];
+const CUSTOM_REFERRAL_SOURCE = '__custom_referral__';
 
 const emptyHomeVisitDetails = (): HomeVisitDetails => ({
   caregiverName: '',
@@ -183,6 +185,7 @@ const emptyPatient = (clinicId: string | null): PatientDraft => ({
   phone: '',
   dateOfBirth: '',
   age: '',
+  occupation: '',
   gender: 'Female',
   address: '',
   signs: '',
@@ -230,12 +233,13 @@ function loadInitialData(): AppData {
           createdByStaffId: (p as Patient).createdByStaffId ?? '',
           createdAt: (p as Patient).createdAt ?? '',
           age: (p as Patient).age ?? '',
+          occupation: (p as Patient).occupation ?? '',
           reports: (p as Patient).reports ?? [],
           signs:         (p as Patient).signs         ?? '',
           symptoms:      (p as Patient).symptoms      ?? '',
           patientHistory: (p as Patient).patientHistory ?? '',
-          caseType:      (p as Patient).caseType      ?? '',
-          condition:     (p as Patient).condition     ?? (hvd?.condition ?? ''),
+          caseType:      patientCaseCondition(p as Patient) || (hvd?.condition ?? ''),
+          condition:     '',
           complications: (p as Patient).complications ?? '',
           surgeries:     (p as Patient).surgeries     ?? '',
           homeVisitDetails: hvd
@@ -340,6 +344,13 @@ function splitSalutation(rawName: string, storedSalutation?: Salutation | null) 
 function patientDisplayName(patient: Pick<Patient, 'name'> & Partial<Pick<Patient, 'salutation'>>) {
   const split = splitSalutation(patient.name, patient.salutation);
   return [split.salutation, split.name].filter(Boolean).join('. ') || patient.name;
+}
+
+function patientCaseCondition(patient: Pick<Patient, 'caseType' | 'condition'> | Pick<PatientDraft, 'caseType' | 'condition'>) {
+  const caseType = patient.caseType?.trim() ?? '';
+  const condition = patient.condition?.trim() ?? '';
+  if (caseType && condition && caseType !== condition) return `${caseType} / ${condition}`;
+  return caseType || condition;
 }
 
 function profileDisplayName(profiles: Profile[], id: string | undefined | null) {
@@ -449,6 +460,7 @@ export function App() {
     if (column === 'created_by_staff_id') delete next.primary_doctor_id;
     if (column === 'primary_doctor_id') delete next.created_by_staff_id;
     if (column === 'age') delete next.age;
+    if (column === 'occupation') delete next.occupation;
     return next;
   };
 
@@ -637,6 +649,8 @@ export function App() {
     const patientToSave: PatientDraft = {
       ...patient,
       name: patient.name.trim(),
+      caseType: patientCaseCondition(patient).trim(),
+      condition: '',
       primaryDoctorId: patient.primaryDoctorId || existing?.primaryDoctorId || currentUser?.id || '',
       createdByStaffId: editingId
         ? patient.createdByStaffId || existing?.createdByStaffId || currentUser?.id || ''
@@ -2438,13 +2452,14 @@ function PatientDetailView({
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
       age: patient.age ?? '',
+      occupation: patient.occupation ?? '',
       gender: patient.gender,
       address: patient.address,
       signs: patient.signs ?? '',
       symptoms: patient.symptoms ?? '',
       patientHistory: patient.patientHistory ?? '',
-      caseType: patient.caseType ?? '',
-      condition: patient.condition ?? patient.homeVisitDetails?.condition ?? '',
+      caseType: patientCaseCondition(patient) || patient.homeVisitDetails?.condition || '',
+      condition: '',
       diagnosis: patient.diagnosis,
       referralSource: patient.referralSource,
       emergencyContact: patient.emergencyContact,
@@ -2512,13 +2527,14 @@ function PatientDetailView({
       phone: patient.phone,
       dateOfBirth: patient.dateOfBirth,
       age: patient.age ?? '',
+      occupation: patient.occupation ?? '',
       gender: patient.gender,
       address: patient.address,
       signs: patient.signs ?? '',
       symptoms: patient.symptoms ?? '',
       patientHistory: patient.patientHistory ?? '',
-      caseType: patient.caseType ?? '',
-      condition: patient.condition ?? patient.homeVisitDetails?.condition ?? '',
+      caseType: patientCaseCondition(patient) || patient.homeVisitDetails?.condition || '',
+      condition: '',
       diagnosis: patient.diagnosis,
       referralSource: patient.referralSource,
       emergencyContact: patient.emergencyContact,
@@ -2676,6 +2692,11 @@ function PatientDetailView({
           <span className="pp-info-value">{patient.referralSource || '—'}</span>
         </div>
         <div className="pp-info-card">
+          <User size={15} className="pp-info-icon" />
+          <span className="pp-info-label">Occupation</span>
+          <span className="pp-info-value">{patient.occupation || '—'}</span>
+        </div>
+        <div className="pp-info-card">
           <Calendar size={15} className="pp-info-icon" />
           <span className="pp-info-label">Age / DOB</span>
           <span className="pp-info-value">
@@ -2700,10 +2721,10 @@ function PatientDetailView({
         <div className="pp-body-col">
 
           {/* Clinical overview */}
-          {(patient.patientHistory || patient.caseType || patient.condition || patient.diagnosis || patient.signs || patient.symptoms || patient.complications || patient.surgeries || patient.notes) && (
+          {(patient.patientHistory || patientCaseCondition(patient) || patient.diagnosis || patient.signs || patient.symptoms || patient.complications || patient.surgeries || patient.notes) && (
             <section className="panel pp-section">
-              <PanelTitle title="Clinical overview" subtitle="History, case, condition and diagnosis" />
-              {(patient.patientHistory || patient.caseType || patient.condition || patient.diagnosis) && (
+              <PanelTitle title="Clinical overview" subtitle="History, case / condition and diagnosis" />
+              {(patient.patientHistory || patientCaseCondition(patient) || patient.diagnosis) && (
                 <div className="pp-clinical-grid">
                   {patient.patientHistory && (
                     <div className="pp-clinical-block">
@@ -2711,16 +2732,10 @@ function PatientDetailView({
                       <p>{patient.patientHistory}</p>
                     </div>
                   )}
-                  {patient.caseType && (
+                  {patientCaseCondition(patient) && (
                     <div className="pp-clinical-block">
-                      <span className="pp-clinical-label">Case</span>
-                      <p>{patient.caseType}</p>
-                    </div>
-                  )}
-                  {patient.condition && (
-                    <div className="pp-clinical-block">
-                      <span className="pp-clinical-label">Condition</span>
-                      <p>{patient.condition}</p>
+                      <span className="pp-clinical-label">Case / condition</span>
+                      <p>{patientCaseCondition(patient)}</p>
                     </div>
                   )}
                   {patient.diagnosis && (
@@ -2780,10 +2795,10 @@ function PatientDetailView({
                   clinicId: patient.clinicId, salutation: patient.salutation ?? '',
                   primaryDoctorId: patient.primaryDoctorId ?? '', createdByStaffId: patient.createdByStaffId ?? '',
                   name: patient.name, phone: patient.phone,
-                  dateOfBirth: patient.dateOfBirth, age: patient.age ?? '', gender: patient.gender, address: patient.address,
+                  dateOfBirth: patient.dateOfBirth, age: patient.age ?? '', occupation: patient.occupation ?? '', gender: patient.gender, address: patient.address,
                   signs: patient.signs ?? '', symptoms: patient.symptoms ?? '',
-                  patientHistory: patient.patientHistory ?? '', caseType: patient.caseType ?? '',
-                  condition: patient.condition ?? patient.homeVisitDetails?.condition ?? '',
+                  patientHistory: patient.patientHistory ?? '', caseType: patientCaseCondition(patient) || patient.homeVisitDetails?.condition || '',
+                  condition: '',
                   diagnosis: patient.diagnosis, referralSource: patient.referralSource,
                   emergencyContact: patient.emergencyContact, notes: patient.notes,
                   complications: patient.complications ?? '', surgeries: patient.surgeries ?? '',
@@ -3197,9 +3212,11 @@ function HomeVisitPanel({
             <div className="modal-body">
               <label>
                 Treatment notes
-                <textarea rows={3} value={popupForm.notes}
-                  onChange={(e) => setPopupForm((f) => ({ ...f, notes: e.target.value }))}
-                  placeholder="What was done in this session…" />
+                <TherapyTypeSelect
+                  value={popupForm.notes}
+                  onChange={(notes) => setPopupForm((f) => ({ ...f, notes }))}
+                  placeholder="Select treatment note(s)"
+                />
               </label>
               <label>
                 Amount collected (₹)
@@ -3421,7 +3438,17 @@ function PatientForm({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadingReport, setUploadingReport] = useState(false);
   const [reportError, setReportError] = useState('');
+  const [referralMode, setReferralMode] = useState<'preset' | 'custom'>(
+    draft.referralSource && !REFERRAL_SOURCE_OPTIONS.includes(draft.referralSource) ? 'custom' : 'preset'
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isCustomReferralSource = referralMode === 'custom';
+
+  useEffect(() => {
+    if (draft.referralSource && !REFERRAL_SOURCE_OPTIONS.includes(draft.referralSource)) {
+      setReferralMode('custom');
+    }
+  }, [draft.referralSource]);
 
   const completion = useMemo(() => {
     const checks = [
@@ -3586,7 +3613,7 @@ function PatientForm({
                 <div>
                   <h1 className="pe-hero-title">{draft.name.trim() || 'New patient'}</h1>
                   <p className="pe-hero-sub">
-                    {(draft.caseType || draft.condition || draft.diagnosis).trim() || 'Fill in details below to create the clinical record'}
+                    {(patientCaseCondition(draft) || draft.diagnosis).trim() || 'Fill in details below to create the clinical record'}
                   </p>
                   <div className="pe-hero-badges">
                     {draft.homeVisitDetails ? (
@@ -3787,12 +3814,39 @@ function PatientForm({
             )}
           </label>
           <label>
+            Occupation
+            <input value={draft.occupation ?? ''} onChange={(e) => setDraft({ ...draft, occupation: e.target.value })} placeholder="Occupation / work" />
+          </label>
+          <label>
             Address
             <input value={draft.address} onChange={(e) => setDraft({ ...draft, address: e.target.value })} placeholder="Street, city, pin code" />
           </label>
           <label>
             Referral source
-            <input value={draft.referralSource} onChange={(e) => setDraft({ ...draft, referralSource: e.target.value })} placeholder="Doctor, walk-in, online…" />
+            <select
+              value={isCustomReferralSource ? CUSTOM_REFERRAL_SOURCE : draft.referralSource}
+              onChange={(e) => {
+                if (e.target.value === CUSTOM_REFERRAL_SOURCE) {
+                  setReferralMode('custom');
+                  setDraft({ ...draft, referralSource: '' });
+                  return;
+                }
+                setReferralMode('preset');
+                setDraft({ ...draft, referralSource: e.target.value });
+              }}
+            >
+              <option value="">Select referral source</option>
+              {REFERRAL_SOURCE_OPTIONS.map((source) => <option key={source} value={source}>{source}</option>)}
+              <option value={CUSTOM_REFERRAL_SOURCE}>Enter manually</option>
+            </select>
+            {isCustomReferralSource && (
+              <input
+                value={draft.referralSource}
+                onChange={(e) => setDraft({ ...draft, referralSource: e.target.value })}
+                placeholder="Enter referral source"
+                style={{ marginTop: 8 }}
+              />
+            )}
           </label>
           <label>
             Emergency contact
@@ -3805,7 +3859,7 @@ function PatientForm({
         entry={isEntry}
         step={3}
         title="Clinical overview"
-        subtitle="History, case, condition, signs and diagnosis"
+        subtitle="History, case / condition, signs and diagnosis"
         icon={Stethoscope}
       >
         <datalist id={caseListId}>
@@ -3822,25 +3876,15 @@ function PatientForm({
           />
         </label>
 
-        <div className="form-two-col">
-          <label>
-            Case
-            <input
-              list={caseListId}
-              value={draft.caseType ?? ''}
-              onChange={(e) => setDraft({ ...draft, caseType: e.target.value })}
-              placeholder="Choose or type case"
-            />
-          </label>
-          <label>
-            Condition
-            <input
-              value={draft.condition ?? ''}
-              onChange={(e) => setDraft({ ...draft, condition: e.target.value })}
-              placeholder="e.g. Frozen shoulder, ACL rehab, cervical pain"
-            />
-          </label>
-        </div>
+        <label>
+          Case / condition
+          <input
+            list={caseListId}
+            value={patientCaseCondition(draft)}
+            onChange={(e) => setDraft({ ...draft, caseType: e.target.value, condition: '' })}
+            placeholder="Choose or type case / condition"
+          />
+        </label>
 
         <label>
           Diagnosis
@@ -4818,8 +4862,9 @@ function HomeVisitsView({
                         <span className="hv-card-name">{patient ? patientDisplayName(patient) : 'Unknown patient'}</span>
                         {patient?.gender && <span className="hv-detail-chip">{patient.gender}</span>}
                         {age && <span className="hv-detail-chip">{age} yrs</span>}
-                        {patient?.caseType && <span className="hv-detail-chip hv-chip-condition">{patient.caseType}</span>}
-                        {(patient?.condition || hvd?.condition) && <span className="hv-detail-chip hv-chip-condition">{patient?.condition || hvd?.condition}</span>}
+                        {(patient ? patientCaseCondition(patient) : hvd?.condition) && (
+                          <span className="hv-detail-chip hv-chip-condition">{patient ? patientCaseCondition(patient) : hvd?.condition}</span>
+                        )}
                       </div>
 
                       <div className="hv-card-meta-row">
@@ -5155,11 +5200,10 @@ function BulkEditSessionsModal({
 
           <label>
             Treatment notes
-            <textarea
-              rows={2}
+            <TherapyTypeSelect
               value={form.treatmentNotes}
-              onChange={(e) => set('treatmentNotes', e.target.value)}
-              placeholder="Leave blank to keep current treatment notes"
+              onChange={(v) => set('treatmentNotes', v)}
+              placeholder="Select treatment note(s)"
             />
           </label>
 
@@ -5343,11 +5387,10 @@ function EditSessionModal({
           </label>
           <label>
             Treatment notes
-            <textarea
-              rows={3}
+            <TherapyTypeSelect
               value={form.treatmentNotes}
-              onChange={(e) => set('treatmentNotes', e.target.value)}
-              placeholder={isCompleted ? 'Treatment notes for this completed session…' : 'Optional treatment notes…'}
+              onChange={(v) => set('treatmentNotes', v)}
+              placeholder="Select treatment note(s)"
             />
           </label>
           <label>
@@ -5562,11 +5605,10 @@ function RecordSessionModal({
 
             <label>
               Treatment notes
-              <textarea
-                rows={3}
+              <TherapyTypeSelect
                 value={form.treatmentNotes}
-                onChange={(e) => set('treatmentNotes', e.target.value)}
-                placeholder="What was done in this session…"
+                onChange={(v) => set('treatmentNotes', v)}
+                placeholder="Select treatment note(s)"
               />
             </label>
           </div>
@@ -7212,7 +7254,7 @@ function isHomeOnlyPatient(p: { clinicId: string | null; homeVisitDetails?: Home
 }
 
 function patientCaseSummary(patient: Patient | PatientDraft) {
-  return patient.caseType || patient.condition || patient.diagnosis || 'Case not set';
+  return patientCaseCondition(patient) || patient.diagnosis || 'Case / condition not set';
 }
 
 // ─── Therapy type multi-select ────────────────────────────────────────────────
@@ -7297,11 +7339,10 @@ function CompleteSessionModal({
           </label>
           <label>
             Treatment notes
-            <textarea
-              rows={3}
+            <TherapyTypeSelect
               value={data.treatmentNotes}
-              onChange={(e) => onChange({ treatmentNotes: e.target.value })}
-              placeholder="What was done in this session…"
+              onChange={(treatmentNotes) => onChange({ treatmentNotes })}
+              placeholder="Select treatment note(s)"
             />
           </label>
           <label>
@@ -7340,10 +7381,12 @@ function TherapyTypeSelect({
   value,
   onChange,
   required,
+  placeholder = 'Select therapy type(s)',
 }: {
   value: string;
   onChange: (v: string) => void;
   required?: boolean;
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -7395,7 +7438,7 @@ function TherapyTypeSelect({
             ))}
           </span>
         ) : (
-          <span className="therapy-trigger-placeholder">Select therapy type(s)</span>
+          <span className="therapy-trigger-placeholder">{placeholder}</span>
         )}
         <ChevronRight size={14} className={`therapy-trigger-caret${open ? ' rotate-down' : ''}`} />
       </button>

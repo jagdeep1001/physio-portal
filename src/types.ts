@@ -61,6 +61,7 @@ export interface Patient {
   phone: string;
   dateOfBirth: string;
   age: string;
+  occupation?: string;
   gender: Gender;
   address: string;
   signs: string;

@@ -31,6 +31,7 @@ create table if not exists public.patients (
   phone text not null default '',
   date_of_birth date,
   age integer,
+  occupation text not null default '',
   gender text check (gender in ('Female', 'Male', 'Other')),
   address text not null default '',
   patient_history text not null default '',
@@ -49,6 +50,7 @@ alter table public.patients add column if not exists salutation text not null de
 alter table public.patients add column if not exists primary_doctor_id uuid references public.profiles(id) on delete set null;
 alter table public.patients add column if not exists created_by_staff_id uuid references public.profiles(id) on delete set null;
 alter table public.patients add column if not exists age integer;
+alter table public.patients add column if not exists occupation text not null default '';
 
 create table if not exists public.visits (
   id uuid primary key default gen_random_uuid(),

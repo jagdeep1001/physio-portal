@@ -44,6 +44,7 @@ type PatientRow = {
   phone: string;
   date_of_birth: string;
   age: string | number | null;
+  occupation: string | null;
   gender: Patient['gender'];
   address: string;
   signs: string | null;
@@ -164,6 +165,7 @@ export function mapPatient(row: PatientRow): Patient {
     phone: row.phone,
     dateOfBirth: row.date_of_birth ?? '',
     age: row.age != null ? String(row.age) : '',
+    occupation: row.occupation ?? '',
     gender: row.gender,
     address: row.address ?? '',
     signs:            row.signs    ?? '',
@@ -321,6 +323,7 @@ export const toPatientRow = (patient: Omit<Patient, 'id' | 'active'>) => ({
   phone:              patient.phone,
   date_of_birth:      patient.dateOfBirth || null,
   age:                patient.age ? parseInt(patient.age, 10) : null,
+  occupation:         patient.occupation ?? '',
   gender:             patient.gender,
   address:            patient.address,
   signs:              patient.signs ?? '',
