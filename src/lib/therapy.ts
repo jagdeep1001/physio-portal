@@ -6,7 +6,19 @@ export const THERAPY_GROUPS = [
     options: ['US', 'TENS', 'IFT', 'Hot pack', 'WAX THERAPY', 'CERVICAL TRACTION', 'LUMBAR TRACTION'],
   },
   {
-    label: 'Advanced',
+    label: 'Rehab',
+    options: [
+      'Rehab',
+      'Strengthening Exercises',
+      'Stretching Exercises',
+      'ROM Exercises',
+      'Balance Training',
+      'Gait Training',
+      'Posture Training',
+    ],
+  },
+  {
+    label: 'Advance',
     options: [
       'Static Cupping',
       'Dynamic cupping',

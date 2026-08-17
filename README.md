@@ -42,3 +42,14 @@ The shipped UI is intentionally demo-first; the schema and access policy are rea
 ## Connect Cloudflare R2 (patient report uploads)
 
 See [workers/r2-reports/README.md](workers/r2-reports/README.md) for bucket, Worker deploy, and frontend env setup.
+
+## WhatsApp session reminders
+
+Patients can be sent a WhatsApp reminder 1-2 hours before their scheduled clinic sessions
+(configurable, with per-clinic overrides, and the clinic location included). Delivery uses
+the Meta WhatsApp Cloud API and runs from a scheduled Cloudflare Worker.
+
+- Configure behavior in the portal under **Reminders** (admin only).
+- Run `supabase_migration.sql` to create the `reminder_settings` and `session_reminders` tables.
+- Deploy the Worker and set up Meta credentials/templates following
+  [workers/whatsapp-reminders/README.md](workers/whatsapp-reminders/README.md).

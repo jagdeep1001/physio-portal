@@ -148,6 +148,13 @@ export interface Equipment {
   notes: string;
 }
 
+export interface ReminderSettings {
+  clinicId: string | null;
+  enabled: boolean;
+  leadHours: number;
+  includeLocation: boolean;
+}
+
 export interface Credentials {
   email: string;
   password: string;
@@ -170,4 +177,5 @@ export interface AppData {
   payments: PaymentRecord[];
   expenses: ClinicExpense[];
   equipment: Equipment[];
+  reminderSettings: ReminderSettings[];
 }

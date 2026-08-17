@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bell,
   Building2,
   Calendar,
   CalendarDays,
@@ -40,11 +41,13 @@ import { demoPasswords, initialData } from './data/mockData';
 import {
   deleteClinicExpenseRecord,
   deleteEquipmentRecord,
+  deleteReminderSettingsRecord,
   insertClinicExpense,
   insertEquipmentRecord,
   isSupabaseConfigured,
   loadRemoteData,
   loginWithProfiles,
+  saveReminderSettingsRecord,
   supabase,
   toPatientRow,
   toPaymentRow,
@@ -120,6 +123,7 @@ import type {
   PaymentMethod,
   PaymentRecord,
   Profile,
+  ReminderSettings,
   Role,
   Salutation,
   SessionStatus,
@@ -142,7 +146,8 @@ type Page =
   | 'calendar'
   | 'clinics'
   | 'staff'
-  | 'expenses';
+  | 'expenses'
+  | 'reminders';
 
 type PatientDraft = Omit<Patient, 'id' | 'active'>;
 type SchedulePreset = { patientId?: string; sessionType?: SessionType; templateSessionId?: string };
@@ -251,6 +256,7 @@ function loadInitialData(): AppData {
       payments: withLegacyPayments(therapySessions, (rest.payments ?? []) as PaymentRecord[]),
       expenses:  (rest.expenses  ?? []) as ClinicExpense[],
       equipment: ((rest.equipment ?? []) as Equipment[]).map(normalizeEquipment),
+      reminderSettings: (rest.reminderSettings ?? initialData.reminderSettings) as ReminderSettings[],
     };
   } catch {
     return initialData;
@@ -527,7 +533,7 @@ export function App() {
     role === 'admin' ? 'dashboard' : 'sessions';
 
   const isAdminOnlyPage = (p: Page) =>
-    p === 'dashboard' || p === 'homeDashboard' || p === 'clinics' || p === 'staff' || p === 'expenses';
+    p === 'dashboard' || p === 'homeDashboard' || p === 'clinics' || p === 'staff' || p === 'expenses' || p === 'reminders';
 
   const persist = (updater: (draft: AppData) => AppData) => {
     setData((current) => {
@@ -949,7 +955,11 @@ export function App() {
 
   const changeSessionStatus = (sessionId: string, status: SessionStatus) => {
     const completedAt = status === 'completed' ? new Date().toISOString() : null;
-    void updateSession(sessionId, { status, completedAt: completedAt ?? undefined });
+    void updateSession(sessionId, {
+      status,
+      completedAt,
+      ...(status === 'cancelled' || status === 'no_show' ? { amountCollected: null } : {}),
+    });
   };
 
   const deleteSession = async (sessionId: string) => {
@@ -1150,6 +1160,40 @@ export function App() {
     }));
   };
 
+  const saveReminderSettings = async (settings: ReminderSettings) => {
+    if (supabase) {
+      try {
+        await saveReminderSettingsRecord(settings);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); }
+      return;
+    }
+    persist((draftData) => {
+      const existing = draftData.reminderSettings ?? [];
+      const found = existing.some((s) => s.clinicId === settings.clinicId);
+      return {
+        ...draftData,
+        reminderSettings: found
+          ? existing.map((s) => (s.clinicId === settings.clinicId ? settings : s))
+          : [...existing, settings],
+      };
+    });
+  };
+
+  const resetClinicReminderOverride = async (clinicId: string) => {
+    if (supabase) {
+      try {
+        await deleteReminderSettingsRecord(clinicId);
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); }
+      return;
+    }
+    persist((draftData) => ({
+      ...draftData,
+      reminderSettings: (draftData.reminderSettings ?? []).filter((s) => s.clinicId !== clinicId),
+    }));
+  };
+
   const addProfile = async (profile: Omit<Profile, 'id'> & { password: string }) => {
     if (supabase) {
       try {
@@ -1300,6 +1344,7 @@ export function App() {
     { page: 'clinics', label: 'Clinics', icon: Building2, adminOnly: true },
     { page: 'staff', label: 'Staff', icon: UserCheck, adminOnly: true },
     { page: 'expenses', label: 'Expenses & Equipment', icon: Receipt, adminOnly: true },
+    { page: 'reminders', label: 'Reminders', icon: Bell, adminOnly: true },
   ];
   const lowStockEquipmentCount = (data.equipment ?? []).map(normalizeEquipment).filter(isLowStockEquipment).length;
 
@@ -1519,6 +1564,14 @@ export function App() {
             onAddEquipment={addEquipment}
             onUpdateEquipment={updateEquipment}
             onDeleteEquipment={deleteEquipment}
+          />
+        )}
+        {page === 'reminders' && currentUser.role === 'admin' && (
+          <RemindersView
+            clinics={data.clinics}
+            reminderSettings={data.reminderSettings ?? []}
+            onSaveSettings={saveReminderSettings}
+            onResetClinicOverride={resetClinicReminderOverride}
           />
         )}
       </main>
@@ -3211,13 +3264,14 @@ function HomeVisitPanel({
             </div>
             <div className="modal-body">
               <label>
-                Treatment notes
-                <TherapyTypeSelect
-                  value={popupForm.notes}
-                  onChange={(notes) => setPopupForm((f) => ({ ...f, notes }))}
-                  placeholder="Select treatment note(s)"
-                />
-              </label>
+              Treatment notes
+              <textarea
+                rows={3}
+                value={popupForm.notes}
+                onChange={(e) => setPopupForm((f) => ({ ...f, notes: e.target.value }))}
+                placeholder="Describe treatment performed, exercises, patient response…"
+              />
+            </label>
               <label>
                 Amount collected (₹)
                 <input type="number" min="0" step="0.01" value={popupForm.amount}
@@ -4545,7 +4599,7 @@ function HomeVisitsView({
   const homePatientIds = new Set(homeSessions.map((s) => s.patientId));
   const homePatients = data.patients.filter((p) => p.homeVisitDetails || homePatientIds.has(p.id) || p.id === preset.patientId);
   const [patientId, setPatientId] = useState(preset.patientId ?? homePatients[0]?.id ?? '');
-  const [therapyType, setTherapyType] = useState('Home Visit');
+  const [therapyType, setTherapyType] = useState('');
   const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>('basic');
   const [dualTherapy, setDualTherapy] = useState(false);
   const [therapyType2, setTherapyType2] = useState('');
@@ -5200,10 +5254,11 @@ function BulkEditSessionsModal({
 
           <label>
             Treatment notes
-            <TherapyTypeSelect
+            <textarea
+              rows={3}
               value={form.treatmentNotes}
-              onChange={(v) => set('treatmentNotes', v)}
-              placeholder="Select treatment note(s)"
+              onChange={(e) => set('treatmentNotes', e.target.value)}
+              placeholder="Leave blank to keep current treatment notes"
             />
           </label>
 
@@ -5275,24 +5330,33 @@ function EditSessionModal({
     notes:         session.notes,
     treatmentNotes: session.treatmentNotes,
     amountCollected: session.amountCollected != null ? String(session.amountCollected) : '',
+    status:        session.status as SessionStatus,
   });
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const setStatus = (status: SessionStatus) => setForm((f) => ({
+    ...f,
+    status,
+    amountCollected: status === 'completed' ? f.amountCollected : '',
+  }));
   const isHome = form.sessionType === 'home';
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+    const status = form.status;
     const scheduledAt = isHome
       ? buildLocalDateTime(form.homeDate, form.homeTime)
       : buildLocalDateTime(form.clinicDate, form.clinicTime);
     onSave({
+      status,
+      completedAt: status === 'completed' ? (session.completedAt ?? new Date().toISOString()) : null,
       therapyType:     form.therapyType,
       sessionType:     form.sessionType,
       therapyLevel:    form.therapyLevel,
       scheduledAt,
       notes:           form.notes,
       treatmentNotes:  form.treatmentNotes,
-      amountCollected: form.amountCollected !== '' ? parseFloat(form.amountCollected) : null,
+      amountCollected: status === 'completed' && form.amountCollected !== '' ? parseFloat(form.amountCollected) : null,
     });
   };
 
@@ -5374,23 +5438,42 @@ function EditSessionModal({
               ))}
             </div>
           </label>
+          {isCompleted && (
+            <label>
+              Session status
+              <div className="toggle-row">
+                {(['completed', 'cancelled', 'no_show'] as SessionStatus[]).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    className={`toggle-btn status-${status} ${form.status === status ? 'active' : ''}`}
+                    onClick={() => setStatus(status)}
+                  >
+                    {statusLabel(status)}
+                  </button>
+                ))}
+              </div>
+            </label>
+          )}
           <label>
-            {isCompleted ? 'Session fee (₹)' : 'Estimated amount (₹)'}
+            {form.status === 'completed' ? 'Session fee (₹)' : 'Estimated amount (₹)'}
             <input
               type="number"
               min="0"
               step="0.01"
               value={form.amountCollected}
               onChange={(e) => set('amountCollected', e.target.value)}
+              disabled={form.status !== 'completed'}
               placeholder="Leave blank if unknown"
             />
           </label>
           <label>
             Treatment notes
-            <TherapyTypeSelect
+            <textarea
+              rows={3}
               value={form.treatmentNotes}
-              onChange={(v) => set('treatmentNotes', v)}
-              placeholder="Select treatment note(s)"
+              onChange={(e) => set('treatmentNotes', e.target.value)}
+              placeholder="Describe treatment performed, exercises, patient response…"
             />
           </label>
           <label>
@@ -5605,10 +5688,11 @@ function RecordSessionModal({
 
             <label>
               Treatment notes
-              <TherapyTypeSelect
+              <textarea
+                rows={3}
                 value={form.treatmentNotes}
-                onChange={(v) => set('treatmentNotes', v)}
-                placeholder="Select treatment note(s)"
+                onChange={(e) => set('treatmentNotes', e.target.value)}
+                placeholder="Describe treatment performed, exercises, patient response…"
               />
             </label>
           </div>
@@ -7175,6 +7259,174 @@ function MetricCard({
   );
 }
 
+const DEFAULT_REMINDER_GLOBAL: ReminderSettings = { clinicId: null, enabled: false, leadHours: 2, includeLocation: true };
+
+function clampLeadHours(value: string | number): number {
+  const parsed = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.min(12, Math.max(0.5, parsed));
+}
+
+function formatLeadHours(hours: number): string {
+  const rounded = Math.round(hours * 100) / 100;
+  return `${rounded} hr${rounded === 1 ? '' : 's'}`;
+}
+
+function ReminderSettingsEditor({ value, onSave }: {
+  value: ReminderSettings;
+  onSave: (settings: ReminderSettings) => void;
+}) {
+  const [draft, setDraft] = useState<ReminderSettings>(value);
+  const dirty =
+    draft.enabled !== value.enabled ||
+    draft.leadHours !== value.leadHours ||
+    draft.includeLocation !== value.includeLocation;
+
+  return (
+    <div className="reminder-form">
+      <div className="reminder-field">
+        <span className="reminder-field-label">Reminders</span>
+        <div className="toggle-row">
+          <button type="button" className={`toggle-btn ${draft.enabled ? 'active' : ''}`} onClick={() => setDraft({ ...draft, enabled: true })}>On</button>
+          <button type="button" className={`toggle-btn ${!draft.enabled ? 'active' : ''}`} onClick={() => setDraft({ ...draft, enabled: false })}>Off</button>
+        </div>
+      </div>
+
+      <label className="reminder-field">
+        <span className="reminder-field-label">Send this many hours before the session</span>
+        <input
+          type="number"
+          min={0.5}
+          max={12}
+          step={0.5}
+          value={draft.leadHours}
+          disabled={!draft.enabled}
+          onChange={(e) => setDraft({ ...draft, leadHours: clampLeadHours(e.target.value) })}
+        />
+        <small className="form-hint">Recommended 1–2 hours. Times are treated as IST.</small>
+      </label>
+
+      <div className="reminder-field">
+        <span className="reminder-field-label">Include clinic location</span>
+        <div className="toggle-row">
+          <button type="button" className={`toggle-btn ${draft.includeLocation ? 'active' : ''}`} disabled={!draft.enabled} onClick={() => setDraft({ ...draft, includeLocation: true })}>Yes</button>
+          <button type="button" className={`toggle-btn ${!draft.includeLocation ? 'active' : ''}`} disabled={!draft.enabled} onClick={() => setDraft({ ...draft, includeLocation: false })}>No</button>
+        </div>
+      </div>
+
+      <div className="reminder-actions">
+        <button type="button" className="primary-button" disabled={!dirty} onClick={() => onSave({ ...draft, leadHours: clampLeadHours(draft.leadHours) })}>
+          <Check size={14} /> Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClinicReminderRow({ clinic, global, override, onSave, onReset }: {
+  clinic: Clinic;
+  global: ReminderSettings;
+  override: ReminderSettings | undefined;
+  onSave: (settings: ReminderSettings) => void;
+  onReset: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const effective = override ?? global;
+  const hasOverride = Boolean(override);
+
+  return (
+    <div className="reminder-clinic-item">
+      <div className="reminder-clinic-head">
+        <div className="reminder-clinic-info">
+          <strong>{clinic.name}</strong>
+          <small>{hasOverride ? 'Custom schedule' : 'Following global defaults'}</small>
+        </div>
+        <div className="reminder-clinic-summary">
+          <span className={`badge ${effective.enabled ? 'badge-green' : 'badge-muted'}`}>{effective.enabled ? 'On' : 'Off'}</span>
+          {effective.enabled && <span className="badge badge-slate">{formatLeadHours(effective.leadHours)} before</span>}
+          {effective.enabled && <span className="badge badge-slate">{effective.includeLocation ? 'With location' : 'No location'}</span>}
+          <button type="button" className="ghost-button" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? 'Close' : hasOverride ? 'Edit' : 'Override'}
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="reminder-clinic-body">
+          <ReminderSettingsEditor
+            value={override ?? { ...global, clinicId: clinic.id }}
+            onSave={(next) => { onSave(next); setExpanded(false); }}
+          />
+          {hasOverride && (
+            <button type="button" className="ghost-button" onClick={() => { onReset(); setExpanded(false); }}>
+              <Trash2 size={14} /> Remove override (use global)
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RemindersView({ clinics, reminderSettings, onSaveSettings, onResetClinicOverride }: {
+  clinics: Clinic[];
+  reminderSettings: ReminderSettings[];
+  onSaveSettings: (settings: ReminderSettings) => void;
+  onResetClinicOverride: (clinicId: string) => void;
+}) {
+  const global = reminderSettings.find((s) => s.clinicId === null) ?? DEFAULT_REMINDER_GLOBAL;
+  const activeClinics = clinics.filter((c) => c.active);
+
+  return (
+    <div className="content-stack">
+      <section className="panel">
+        <div className="toolbar">
+          <PanelTitle title="Global defaults" subtitle="Applied to every clinic unless overridden below" />
+        </div>
+        <ReminderSettingsEditor
+          key={`global-${global.enabled}-${global.leadHours}-${global.includeLocation}`}
+          value={global}
+          onSave={(next) => onSaveSettings({ ...next, clinicId: null })}
+        />
+      </section>
+
+      <section className="panel">
+        <div className="toolbar">
+          <PanelTitle title="Per-clinic overrides" subtitle="Override the global schedule for individual clinics" />
+        </div>
+        {activeClinics.length === 0 ? (
+          <EmptyState message="No active clinics to configure." />
+        ) : (
+          <div className="reminder-clinic-list">
+            {activeClinics.map((clinic) => (
+              <ClinicReminderRow
+                key={clinic.id}
+                clinic={clinic}
+                global={global}
+                override={reminderSettings.find((s) => s.clinicId === clinic.id)}
+                onSave={(next) => onSaveSettings({ ...next, clinicId: clinic.id })}
+                onReset={() => onResetClinicOverride(clinic.id)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="toolbar">
+          <PanelTitle title="How reminders are sent" subtitle="WhatsApp delivery runs from a scheduled Cloudflare Worker" />
+        </div>
+        <ul className="reminder-help-list">
+          <li>Reminders are sent to patients about <strong>lead hours</strong> before each <strong>clinic</strong> session. Home visits are skipped.</li>
+          <li>Session times are treated as <strong>Asia/Kolkata (IST)</strong>.</li>
+          <li>Live delivery requires deploying <code>workers/whatsapp-reminders</code> with Meta WhatsApp credentials — see its README.</li>
+          <li>These settings control behavior only; no API credentials are stored here.</li>
+        </ul>
+      </section>
+    </div>
+  );
+}
+
 function PanelTitle({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div className="panel-title">
@@ -7278,9 +7530,24 @@ function amountInputValue(amount: number | null | undefined) {
   return String(Math.round(amount));
 }
 
+const HOME_VISIT_THERAPY_PLACEHOLDER = 'Home Visit';
+
+function therapyTypeForCompletion(session: TherapySession, previous?: TherapySession) {
+  const therapyType = session.sessionType === 'home' && session.therapyType === HOME_VISIT_THERAPY_PLACEHOLDER
+    ? previous?.therapyType
+    : session.therapyType;
+
+  return therapyType === HOME_VISIT_THERAPY_PLACEHOLDER ? '' : therapyType || '';
+}
+
 function completionFormFromSession(session: TherapySession, sessions: TherapySession[]): CompletionFormData {
   const previous = sessions
-    .filter((s) => s.id !== session.id && s.patientId === session.patientId && s.status === 'completed')
+    .filter((s) =>
+      s.id !== session.id &&
+      s.patientId === session.patientId &&
+      s.status === 'completed' &&
+      s.therapyType !== HOME_VISIT_THERAPY_PLACEHOLDER
+    )
     .sort((a, b) => {
       const aTime = a.completedAt ?? a.scheduledAt;
       const bTime = b.completedAt ?? b.scheduledAt;
@@ -7288,8 +7555,8 @@ function completionFormFromSession(session: TherapySession, sessions: TherapySes
     })[0];
 
   return {
-    therapyType: session.therapyType || previous?.therapyType || '',
-    treatmentNotes: session.treatmentNotes || previous?.treatmentNotes || '',
+    therapyType: therapyTypeForCompletion(session, previous),
+    treatmentNotes: session.treatmentNotes || '',
     amountCollected: session.amountCollected != null
       ? amountInputValue(session.amountCollected)
       : amountInputValue(previous?.amountCollected),
@@ -7339,10 +7606,11 @@ function CompleteSessionModal({
           </label>
           <label>
             Treatment notes
-            <TherapyTypeSelect
+            <textarea
+              rows={3}
               value={data.treatmentNotes}
-              onChange={(treatmentNotes) => onChange({ treatmentNotes })}
-              placeholder="Select treatment note(s)"
+              onChange={(e) => onChange({ treatmentNotes: e.target.value })}
+              placeholder="Describe treatment performed, exercises, patient response…"
             />
           </label>
           <label>
@@ -7389,9 +7657,11 @@ function TherapyTypeSelect({
   placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [activeGroupLabel, setActiveGroupLabel] = useState<string>(THERAPY_GROUPS[0]?.label ?? '');
   const wrapRef = useRef<HTMLDivElement>(null);
   const selected = splitTherapyTypes(value);
   const selectedSet = new Set(selected);
+  const activeGroup = THERAPY_GROUPS.find((group) => group.label === activeGroupLabel) ?? THERAPY_GROUPS[0];
 
   useEffect(() => {
     if (!open) return;
@@ -7412,6 +7682,9 @@ function TherapyTypeSelect({
   const removeItem = (option: string) => {
     onChange(selected.filter((s) => s !== option).join(THERAPY_SEPARATOR));
   };
+
+  const groupSelectedCount = (options: readonly string[]) =>
+    options.filter((option) => selectedSet.has(option)).length;
 
   return (
     <div className="therapy-multiselect" ref={wrapRef}>
@@ -7456,23 +7729,39 @@ function TherapyTypeSelect({
       {/* Dropdown menu */}
       {open && (
         <div className="therapy-dropdown-menu">
-          {THERAPY_GROUPS.map((group) => (
-            <div key={group.label} className="therapy-dropdown-group">
-              <span className="therapy-dropdown-title">{group.label}</span>
-              <div className="therapy-dropdown-options">
-                {group.options.map((option) => (
-                  <label key={option} className="therapy-check-option">
-                    <input
-                      type="checkbox"
-                      checked={selectedSet.has(option)}
-                      onChange={(e) => toggle(option, e.target.checked)}
-                    />
-                    <span>{option}</span>
-                  </label>
-                ))}
-              </div>
+          <div className="therapy-group-tabs" role="tablist" aria-label="Therapy categories">
+            {THERAPY_GROUPS.map((group) => {
+              const count = groupSelectedCount(group.options);
+              return (
+                <button
+                  key={group.label}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeGroup.label === group.label}
+                  className={`therapy-group-tab ${activeGroup.label === group.label ? 'active' : ''}`}
+                  onClick={() => setActiveGroupLabel(group.label)}
+                >
+                  {group.label}
+                  {count > 0 && <span>{count}</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="therapy-dropdown-group">
+            <span className="therapy-dropdown-title">{activeGroup.label}</span>
+            <div className="therapy-dropdown-options">
+              {activeGroup.options.map((option) => (
+                <label key={option} className="therapy-check-option">
+                  <input
+                    type="checkbox"
+                    checked={selectedSet.has(option)}
+                    onChange={(e) => toggle(option, e.target.checked)}
+                  />
+                  <span>{option}</span>
+                </label>
+              ))}
             </div>
-          ))}
+          </div>
           <div className="therapy-dropdown-actions">
             <button type="button" className="ghost-button" onClick={() => onChange('')}>Clear</button>
             <button type="button" className="primary-button" onClick={() => setOpen(false)}>Done</button>
@@ -8157,6 +8446,7 @@ function pageTitle(page: Page) {
     clinics: 'Clinics',
     staff: 'Staff access',
     expenses: 'Expenses & Equipment',
+    reminders: 'WhatsApp reminders',
   };
   return titles[page];
 }

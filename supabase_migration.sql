@@ -240,5 +240,59 @@ create index if not exists idx_equipment_clinic       on equipment(clinic_id);
 grant all on clinic_expenses to anon, authenticated, service_role;
 grant all on equipment       to anon, authenticated, service_role;
 
+-- ── WhatsApp reminder settings ───────────────────────────────────────────────
+-- Behavior config only (no secrets). A single row with clinic_id = null is the
+-- global default; rows with a clinic_id override the global for that clinic.
+create table if not exists reminder_settings (
+  id               uuid primary key default gen_random_uuid(),
+  clinic_id        uuid references clinics(id) on delete cascade,
+  enabled          boolean not null default false,
+  lead_hours       numeric(4, 2) not null default 2,
+  include_location boolean not null default true,
+  updated_at       timestamptz not null default now()
+);
+
+-- Enforce a single global row (clinic_id null) and one row per clinic.
+create unique index if not exists idx_reminder_settings_global
+  on reminder_settings ((clinic_id is null)) where clinic_id is null;
+create unique index if not exists idx_reminder_settings_clinic
+  on reminder_settings (clinic_id) where clinic_id is not null;
+
+-- ── WhatsApp reminder send log (dedupe + audit) ──────────────────────────────
+create table if not exists session_reminders (
+  id                  uuid primary key default gen_random_uuid(),
+  session_id          uuid not null unique references therapy_sessions(id) on delete cascade,
+  status              text not null default 'sent',
+  to_phone            text not null default '',
+  provider_message_id text not null default '',
+  error               text not null default '',
+  sent_at             timestamptz not null default now()
+);
+
+alter table reminder_settings enable row level security;
+alter table session_reminders enable row level security;
+
+do $$ declare r record;
+begin
+  for r in select policyname, tablename from pg_policies
+           where tablename in ('reminder_settings', 'session_reminders')
+  loop
+    execute format('drop policy if exists %I on %I', r.policyname, r.tablename);
+  end loop;
+end $$;
+
+create policy "allow_all_reminder_settings" on reminder_settings for all using (true) with check (true);
+create policy "allow_all_session_reminders" on session_reminders for all using (true) with check (true);
+
+create index if not exists idx_session_reminders_session on session_reminders(session_id);
+
+grant all on reminder_settings to anon, authenticated, service_role;
+grant all on session_reminders to anon, authenticated, service_role;
+
+-- Seed the global default (disabled until credentials are configured).
+insert into reminder_settings (clinic_id, enabled, lead_hours, include_location)
+select null, false, 2, true
+where not exists (select 1 from reminder_settings where clinic_id is null);
+
 -- Refresh PostgREST/Supabase REST schema cache after adding columns.
 notify pgrst, 'reload schema';

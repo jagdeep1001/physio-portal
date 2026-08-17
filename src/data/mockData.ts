@@ -292,4 +292,7 @@ export const initialData: AppData = {
   payments: buildLegacyPayments(therapySessions),
   expenses: [],
   equipment: [],
+  reminderSettings: [
+    { clinicId: null, enabled: false, leadHours: 2, includeLocation: true },
+  ],
 };

@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { fromDbScheduledAt, toDbScheduledAt } from './datetime';
 import { normalizeMoney, withLegacyPayments } from './payments';
-import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, PaymentAllocation, PaymentMethod, PaymentRecord, Profile, Salutation, TherapySession } from '../types';
+import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, PaymentAllocation, PaymentMethod, PaymentRecord, Profile, ReminderSettings, Salutation, TherapySession } from '../types';
 
 const supabaseUrl      = import.meta.env.VITE_SUPABASE_URL      as string | undefined;
 const supabaseAnonKey  = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -116,6 +116,14 @@ type EquipmentRow = {
   condition: string;
   serial_number: string;
   notes: string;
+};
+
+type ReminderSettingsRow = {
+  id: string;
+  clinic_id: string | null;
+  enabled: boolean;
+  lead_hours: number | string | null;
+  include_location: boolean;
 };
 
 function isMissingTableError(error: unknown, tableName: string): boolean {
@@ -262,6 +270,16 @@ export function mapEquipment(row: EquipmentRow): Equipment {
   };
 }
 
+export function mapReminderSettings(row: ReminderSettingsRow): ReminderSettings {
+  const lead = row.lead_hours != null ? Number(row.lead_hours) : 2;
+  return {
+    clinicId: row.clinic_id,
+    enabled: Boolean(row.enabled),
+    leadHours: Number.isFinite(lead) && lead > 0 ? lead : 2,
+    includeLocation: Boolean(row.include_location),
+  };
+}
+
 // ── Auth: login against profiles table (no Supabase Auth) ──
 export async function loginWithProfiles(email: string, password: string): Promise<Profile | null> {
   if (!supabase) return null;
@@ -280,7 +298,7 @@ export async function loginWithProfiles(email: string, password: string): Promis
 export async function loadRemoteData(): Promise<AppData> {
   if (!supabase) throw new Error('Supabase is not configured.');
 
-  const [clinics, profiles, patients, therapySessions, payments, expenses, equipment] = await Promise.all([
+  const [clinics, profiles, patients, therapySessions, payments, expenses, equipment, reminderSettings] = await Promise.all([
     supabase.from('clinics').select('*').order('name'),
     supabase.from('profiles').select('*').order('name'),
     supabase.from('patients').select('*').order('name'),
@@ -288,12 +306,15 @@ export async function loadRemoteData(): Promise<AppData> {
     supabase.from('patient_payments').select('*').order('paid_at'),
     supabase.from('clinic_expenses').select('*').order('date', { ascending: false }),
     supabase.from('equipment').select('*').order('name'),
+    supabase.from('reminder_settings').select('*'),
   ]);
 
   const paymentsTableMissing = isMissingTableError(payments.error, 'patient_payments');
+  const reminderSettingsMissing = isMissingTableError(reminderSettings.error, 'reminder_settings');
   const error = clinics.error ?? profiles.error ?? patients.error ?? therapySessions.error
     ?? (paymentsTableMissing ? null : payments.error)
-    ?? expenses.error ?? equipment.error;
+    ?? expenses.error ?? equipment.error
+    ?? (reminderSettingsMissing ? null : reminderSettings.error);
   if (error) throw error;
 
   const mappedSessions = (therapySessions.data ?? []).map((row) => mapTherapySession(row as TherapySessionRow));
@@ -309,6 +330,9 @@ export async function loadRemoteData(): Promise<AppData> {
     payments:        withLegacyPayments(mappedSessions, mappedPayments),
     expenses:        (expenses.data        ?? []).map((row) => mapClinicExpense(row as ClinicExpenseRow)),
     equipment:       (equipment.data       ?? []).map((row) => mapEquipment(row as EquipmentRow)),
+    reminderSettings: reminderSettingsMissing
+      ? []
+      : (reminderSettings.data ?? []).map((row) => mapReminderSettings(row as ReminderSettingsRow)),
   };
 }
 
@@ -483,4 +507,47 @@ export async function deleteEquipmentRecord(id: string) {
     .eq('id', id);
   if (error) throw error;
   if (!count) throw new Error('Equipment not found or could not be deleted.');
+}
+
+// ── Reminder settings mutations ──────────────────────────────────────────────
+
+export const toReminderSettingsRow = (settings: ReminderSettings) => ({
+  clinic_id:        settings.clinicId,
+  enabled:          settings.enabled,
+  lead_hours:       settings.leadHours,
+  include_location: settings.includeLocation,
+  updated_at:       new Date().toISOString(),
+});
+
+/** Upsert a global (clinic_id null) or per-clinic reminder settings row. */
+export async function saveReminderSettingsRecord(settings: ReminderSettings) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const row = toReminderSettingsRow(settings);
+  const match = supabase.from('reminder_settings').select('id');
+  const { data: existing, error: selectError } = await (settings.clinicId
+    ? match.eq('clinic_id', settings.clinicId)
+    : match.is('clinic_id', null)
+  ).maybeSingle();
+  if (selectError) throw selectError;
+
+  if (existing) {
+    const { error } = await supabase
+      .from('reminder_settings')
+      .update(row)
+      .eq('id', (existing as { id: string }).id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from('reminder_settings').insert(row);
+    if (error) throw error;
+  }
+}
+
+/** Remove a per-clinic override so the clinic falls back to the global default. */
+export async function deleteReminderSettingsRecord(clinicId: string) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase
+    .from('reminder_settings')
+    .delete()
+    .eq('clinic_id', clinicId);
+  if (error) throw error;
 }

@@ -2037,6 +2037,50 @@ textarea { min-height: 76px; resize: vertical; }
 .toggle-btn.status-cancelled.active,
 .toggle-btn.status-no_show.active    { border-color: var(--coral);  background: var(--coral-light);  color: #991b1b; }
 
+/* ── Reminder settings ── */
+.reminder-form {
+  display: grid;
+  gap: 16px;
+  max-width: 460px;
+}
+.reminder-field { display: grid; gap: 4px; }
+.reminder-field-label { font-size: 0.82rem; font-weight: 600; color: var(--slate); }
+.reminder-form input[type="number"] {
+  width: 140px;
+  padding: 8px 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.reminder-form input[type="number"]:disabled { background: #f8fafc; color: var(--muted); }
+.reminder-actions { margin-top: 4px; }
+.reminder-clinic-list { display: grid; gap: 10px; }
+.reminder-clinic-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+}
+.reminder-clinic-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.reminder-clinic-info { display: grid; gap: 2px; }
+.reminder-clinic-info small { color: var(--muted); }
+.reminder-clinic-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.reminder-clinic-body {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  display: grid;
+  gap: 12px;
+}
+.reminder-help-list { margin: 0; padding-left: 18px; display: grid; gap: 8px; color: var(--slate); font-size: 0.86rem; }
+.reminder-help-list code { background: #f1f5f9; padding: 1px 6px; border-radius: 6px; font-size: 0.8rem; }
+
 /* Required asterisk */
 .required { color: var(--coral); font-weight: 700; }
 
@@ -3869,6 +3913,43 @@ textarea { min-height: 76px; resize: vertical; }
   background: var(--surface);
   box-shadow: 0 12px 36px rgba(15,23,42,0.14);
   padding: 8px;
+}
+.therapy-group-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.therapy-group-tab {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--slate);
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.therapy-group-tab.active {
+  border-color: var(--teal);
+  background: var(--teal-pale);
+  color: var(--teal-dark);
+}
+.therapy-group-tab span {
+  min-width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--teal);
+  color: white;
+  font-size: 0.66rem;
+  line-height: 1;
 }
 .therapy-dropdown-group + .therapy-dropdown-group {
   margin-top: 8px;
