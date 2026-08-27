@@ -4011,6 +4011,256 @@ textarea { min-height: 76px; resize: vertical; }
   top: 40px;
 }
 
+/* ── Staff attendance ── */
+.staff-attendance-page .attendance-toolbar {
+  align-items: center;
+  gap: 14px;
+}
+.attendance-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 1 1 560px;
+  min-width: 0;
+}
+.attendance-date-control {
+  display: grid;
+  grid-template-columns: 38px minmax(170px, 220px) 38px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.attendance-date-control .icon-only {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+}
+.attendance-date-control .icon-only svg {
+  display: block;
+}
+.attendance-controls input[type="date"],
+.attendance-controls select {
+  min-height: 38px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 10px;
+  font-size: 0.84rem;
+}
+.attendance-controls select {
+  min-width: 170px;
+  max-width: 230px;
+}
+.attendance-metrics {
+  margin-top: 16px;
+}
+.attendance-modal {
+  width: min(920px, calc(100vw - 32px));
+}
+.attendance-modal .modal-body {
+  max-height: min(62vh, 620px);
+  overflow: auto;
+}
+.attendance-table {
+  display: grid;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.attendance-table-head,
+.attendance-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(170px, 0.8fr) minmax(170px, 0.8fr) minmax(150px, 0.55fr);
+  align-items: stretch;
+}
+.attendance-table-head {
+  min-height: 38px;
+  align-items: center;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.attendance-table-head span {
+  padding: 0 14px;
+}
+.attendance-row {
+  min-height: 78px;
+  border-top: 1px solid var(--border);
+}
+.attendance-staff {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+}
+.attendance-staff > div:last-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.attendance-staff strong,
+.attendance-staff small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attendance-staff .badge {
+  width: fit-content;
+  max-width: 100%;
+}
+.attendance-slot-cell {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  padding: 12px 14px;
+  border-left: 1px solid var(--border);
+}
+.attendance-slot-cell.present {
+  background: #fbfffd;
+}
+.attendance-slot-cell.absent {
+  background: #fff8f8;
+}
+.attendance-slot-label {
+  display: none;
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.attendance-status-switch {
+  width: min(100%, 176px);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 3px;
+  gap: 3px;
+}
+.attendance-status-switch button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.attendance-status-switch button.active.present {
+  background: var(--green-light);
+  color: var(--green-dark);
+}
+.attendance-status-switch button.active.absent {
+  background: var(--coral-light);
+  color: #991b1b;
+}
+.attendance-status-switch button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.attendance-slot-cell input {
+  width: min(100%, 176px);
+  min-height: 34px;
+  font-size: 0.8rem;
+  padding: 6px 9px;
+}
+.attendance-actions-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border-left: 1px solid var(--border);
+}
+.attendance-actions-cell .secondary-button {
+  width: 100%;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+}
+.attendance-history-modal .attendance-metrics {
+  margin-top: 0;
+}
+.attendance-history-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+.attendance-history-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.45fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.attendance-history-row div {
+  display: grid;
+  gap: 2px;
+}
+.attendance-history-row strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+.attendance-history-row small,
+.attendance-history-row span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 980px) {
+  .attendance-table-head {
+    display: none;
+  }
+  .attendance-row {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    padding: 12px;
+    gap: 10px;
+  }
+  .attendance-staff,
+  .attendance-slot-cell,
+  .attendance-actions-cell {
+    padding: 0;
+    border-left: 0;
+  }
+  .attendance-slot-cell {
+    grid-template-columns: 74px minmax(0, 188px);
+    align-items: center;
+    justify-content: start;
+  }
+  .attendance-slot-cell input {
+    grid-column: 2;
+  }
+  .attendance-slot-label {
+    display: block;
+  }
+  .attendance-actions-cell {
+    justify-content: flex-start;
+  }
+  .attendance-actions-cell .secondary-button {
+    width: min(100%, 262px);
+  }
+}
+
 @media (max-width: 1080px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; padding: 14px 16px; }
@@ -4025,6 +4275,7 @@ textarea { min-height: 76px; resize: vertical; }
   .facts { grid-template-columns: repeat(2, 1fr); }
   .patient-profile-card .profile-header { grid-template-columns: 56px 1fr; }
   .profile-actions { grid-column: 1 / -1; flex-direction: row; }
+  .attendance-controls { justify-content: flex-start; }
   .table-row { grid-template-columns: 36px minmax(0,1fr) auto; }
   .table-row span:nth-child(3),
   .table-row span:nth-child(4) { display: none; }
@@ -4037,6 +4288,25 @@ textarea { min-height: 76px; resize: vertical; }
   .home-schedule-grid, .home-schedule-notes { grid-template-columns: 1fr; grid-column: auto; }
   .clinic-grid, .form-two-col, .add-report-form, .record-session-grid { grid-template-columns: 1fr; }
   .topbar, .toolbar { flex-direction: column; align-items: stretch; }
+  .attendance-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .attendance-date-control {
+    grid-template-columns: 38px minmax(0, 1fr) 38px;
+    width: 100%;
+  }
+  .attendance-controls select,
+  .attendance-controls .primary-button {
+    width: 100%;
+    max-width: none;
+  }
+  .attendance-slot-cell { grid-template-columns: 1fr; }
+  .attendance-slot-cell input { grid-column: auto; }
+  .attendance-status-switch,
+  .attendance-slot-cell input,
+  .attendance-actions-cell .secondary-button { width: 100%; }
+  .attendance-history-row { grid-template-columns: 1fr; }
   .calendar-cell { min-height: 64px; }
   .facts { grid-template-columns: 1fr; }
   .staff-row { grid-template-columns: 1fr; }

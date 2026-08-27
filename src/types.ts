@@ -3,6 +3,8 @@ export type StaffStatus = 'pending' | 'active' | 'inactive';
 export type SessionStatus = 'scheduled' | 'completed' | 'cancelled' | 'no_show';
 export type SessionType = 'clinic' | 'home';
 export type TherapyLevel = 'basic' | 'rehab' | 'advance';
+export type AttendanceSlot = 'morning' | 'evening';
+export type AttendanceStatus = 'present' | 'absent';
 export type Gender = 'Female' | 'Male' | 'Other';
 export type Salutation = '' | 'Mr' | 'Mrs' | 'Ms' | 'Miss' | 'Dr';
 
@@ -155,6 +157,18 @@ export interface ReminderSettings {
   includeLocation: boolean;
 }
 
+export interface StaffAttendanceRecord {
+  id: string;
+  staffId: string;
+  clinicId: string | null;
+  date: string;
+  slot: AttendanceSlot;
+  status: AttendanceStatus;
+  notes: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
 export interface Credentials {
   email: string;
   password: string;
@@ -178,4 +192,5 @@ export interface AppData {
   expenses: ClinicExpense[];
   equipment: Equipment[];
   reminderSettings: ReminderSettings[];
+  staffAttendance: StaffAttendanceRecord[];
 }

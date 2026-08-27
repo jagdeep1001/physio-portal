@@ -1,4 +1,4 @@
-import type { AppData, Clinic, Patient, Profile, TherapySession } from '../types';
+import type { AppData, Clinic, Patient, Profile, StaffAttendanceRecord, TherapySession } from '../types';
 import { buildLegacyPayments } from '../lib/payments';
 
 export const demoPasswords: Record<string, string> = {
@@ -284,6 +284,8 @@ export const therapySessions: TherapySession[] = [
   },
 ];
 
+export const staffAttendance: StaffAttendanceRecord[] = [];
+
 export const initialData: AppData = {
   clinics,
   profiles,
@@ -295,4 +297,5 @@ export const initialData: AppData = {
   reminderSettings: [
     { clinicId: null, enabled: false, leadHours: 2, includeLocation: true },
   ],
+  staffAttendance,
 };

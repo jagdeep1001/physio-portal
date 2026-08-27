@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { fromDbScheduledAt, toDbScheduledAt } from './datetime';
 import { normalizeMoney, withLegacyPayments } from './payments';
-import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, PaymentAllocation, PaymentMethod, PaymentRecord, Profile, ReminderSettings, Salutation, TherapySession } from '../types';
+import type { AppData, Clinic, ClinicExpense, Equipment, HomeVisitDetails, Patient, PatientReport, PaymentAllocation, PaymentMethod, PaymentRecord, Profile, ReminderSettings, Salutation, StaffAttendanceRecord, TherapySession } from '../types';
 
 const supabaseUrl      = import.meta.env.VITE_SUPABASE_URL      as string | undefined;
 const supabaseAnonKey  = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -124,6 +124,18 @@ type ReminderSettingsRow = {
   enabled: boolean;
   lead_hours: number | string | null;
   include_location: boolean;
+};
+
+type StaffAttendanceRow = {
+  id: string;
+  staff_id: string;
+  clinic_id: string | null;
+  attendance_date: string;
+  slot: StaffAttendanceRecord['slot'];
+  status: StaffAttendanceRecord['status'];
+  notes: string | null;
+  updated_by: string | null;
+  updated_at: string;
 };
 
 function isMissingTableError(error: unknown, tableName: string): boolean {
@@ -280,6 +292,20 @@ export function mapReminderSettings(row: ReminderSettingsRow): ReminderSettings 
   };
 }
 
+export function mapStaffAttendance(row: StaffAttendanceRow): StaffAttendanceRecord {
+  return {
+    id: row.id,
+    staffId: row.staff_id,
+    clinicId: row.clinic_id,
+    date: row.attendance_date,
+    slot: row.slot,
+    status: row.status,
+    notes: row.notes ?? '',
+    updatedBy: row.updated_by ?? '',
+    updatedAt: row.updated_at,
+  };
+}
+
 // ── Auth: login against profiles table (no Supabase Auth) ──
 export async function loginWithProfiles(email: string, password: string): Promise<Profile | null> {
   if (!supabase) return null;
@@ -298,7 +324,7 @@ export async function loginWithProfiles(email: string, password: string): Promis
 export async function loadRemoteData(): Promise<AppData> {
   if (!supabase) throw new Error('Supabase is not configured.');
 
-  const [clinics, profiles, patients, therapySessions, payments, expenses, equipment, reminderSettings] = await Promise.all([
+  const [clinics, profiles, patients, therapySessions, payments, expenses, equipment, reminderSettings, staffAttendance] = await Promise.all([
     supabase.from('clinics').select('*').order('name'),
     supabase.from('profiles').select('*').order('name'),
     supabase.from('patients').select('*').order('name'),
@@ -307,14 +333,17 @@ export async function loadRemoteData(): Promise<AppData> {
     supabase.from('clinic_expenses').select('*').order('date', { ascending: false }),
     supabase.from('equipment').select('*').order('name'),
     supabase.from('reminder_settings').select('*'),
+    supabase.from('staff_attendance').select('*').order('attendance_date', { ascending: false }),
   ]);
 
   const paymentsTableMissing = isMissingTableError(payments.error, 'patient_payments');
   const reminderSettingsMissing = isMissingTableError(reminderSettings.error, 'reminder_settings');
+  const staffAttendanceMissing = isMissingTableError(staffAttendance.error, 'staff_attendance');
   const error = clinics.error ?? profiles.error ?? patients.error ?? therapySessions.error
     ?? (paymentsTableMissing ? null : payments.error)
     ?? expenses.error ?? equipment.error
-    ?? (reminderSettingsMissing ? null : reminderSettings.error);
+    ?? (reminderSettingsMissing ? null : reminderSettings.error)
+    ?? (staffAttendanceMissing ? null : staffAttendance.error);
   if (error) throw error;
 
   const mappedSessions = (therapySessions.data ?? []).map((row) => mapTherapySession(row as TherapySessionRow));
@@ -333,6 +362,9 @@ export async function loadRemoteData(): Promise<AppData> {
     reminderSettings: reminderSettingsMissing
       ? []
       : (reminderSettings.data ?? []).map((row) => mapReminderSettings(row as ReminderSettingsRow)),
+    staffAttendance: staffAttendanceMissing
+      ? []
+      : (staffAttendance.data ?? []).map((row) => mapStaffAttendance(row as StaffAttendanceRow)),
   };
 }
 
@@ -411,6 +443,17 @@ export const toPaymentRow = (payment: Omit<PaymentRecord, 'id'>) => ({
     amount: normalizeMoney(allocation.amount),
   })),
   created_at:  payment.createdAt,
+});
+
+export const toStaffAttendanceRow = (record: Omit<StaffAttendanceRecord, 'id'>) => ({
+  staff_id:        record.staffId,
+  clinic_id:       record.clinicId,
+  attendance_date: record.date,
+  slot:            record.slot,
+  status:          record.status,
+  notes:           record.notes ?? '',
+  updated_by:      record.updatedBy || null,
+  updated_at:      record.updatedAt,
 });
 
 export const toClinicExpenseRow = (expense: Omit<ClinicExpense, 'id'>) => ({
@@ -549,5 +592,25 @@ export async function deleteReminderSettingsRecord(clinicId: string) {
     .from('reminder_settings')
     .delete()
     .eq('clinic_id', clinicId);
+  if (error) throw error;
+}
+
+export async function upsertStaffAttendanceRecord(record: StaffAttendanceRecord) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { id, ...rest } = record;
+  const { error } = await supabase
+    .from('staff_attendance')
+    .upsert({ ...toStaffAttendanceRow(rest), id }, { onConflict: 'staff_id,attendance_date,slot' });
+  if (error) throw error;
+}
+
+export async function deleteStaffAttendanceRecord(staffId: string, date: string, slot: StaffAttendanceRecord['slot']) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase
+    .from('staff_attendance')
+    .delete()
+    .eq('staff_id', staffId)
+    .eq('attendance_date', date)
+    .eq('slot', slot);
   if (error) throw error;
 }

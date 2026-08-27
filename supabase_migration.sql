@@ -115,18 +115,32 @@ create table if not exists patient_payments (
   created_at  timestamptz not null default now()
 );
 
+create table if not exists staff_attendance (
+  id              uuid primary key default gen_random_uuid(),
+  staff_id        uuid not null references profiles(id) on delete cascade,
+  clinic_id       uuid references clinics(id) on delete set null,
+  attendance_date date not null,
+  slot            text not null check (slot in ('morning', 'evening')),
+  status          text not null check (status in ('present', 'absent')) default 'absent',
+  notes           text not null default '',
+  updated_by      uuid references profiles(id) on delete set null,
+  updated_at      timestamptz not null default now(),
+  unique (staff_id, attendance_date, slot)
+);
+
 -- ── Row-Level Security ─────────────────────────────────────
 alter table clinics          enable row level security;
 alter table profiles         enable row level security;
 alter table patients         enable row level security;
 alter table therapy_sessions enable row level security;
 alter table patient_payments enable row level security;
+alter table staff_attendance enable row level security;
 
 -- Drop & recreate policies (safe re-run)
 do $$ declare r record;
 begin
   for r in select policyname, tablename from pg_policies
-           where tablename in ('clinics','profiles','patients','therapy_sessions','patient_payments')
+           where tablename in ('clinics','profiles','patients','therapy_sessions','patient_payments','staff_attendance')
   loop
     execute format('drop policy if exists %I on %I', r.policyname, r.tablename);
   end loop;
@@ -137,6 +151,7 @@ create policy "allow_all_profiles"         on profiles         for all using (tr
 create policy "allow_all_patients"         on patients         for all using (true) with check (true);
 create policy "allow_all_therapy_sessions" on therapy_sessions for all using (true) with check (true);
 create policy "allow_all_patient_payments" on patient_payments for all using (true) with check (true);
+create policy "allow_all_staff_attendance" on staff_attendance for all using (true) with check (true);
 
 -- ── Indexes ────────────────────────────────────────────────
 create index if not exists idx_patients_clinic    on patients(clinic_id);
@@ -146,6 +161,9 @@ create index if not exists idx_sessions_scheduled on therapy_sessions(scheduled_
 create index if not exists idx_patient_payments_patient on patient_payments(patient_id);
 create index if not exists idx_patient_payments_paid_at on patient_payments(paid_at);
 create index if not exists idx_profiles_clinic    on profiles(clinic_id);
+create index if not exists idx_staff_attendance_date on staff_attendance(attendance_date);
+create index if not exists idx_staff_attendance_staff on staff_attendance(staff_id);
+create index if not exists idx_staff_attendance_clinic on staff_attendance(clinic_id);
 
 -- ── Seed: initial admin account ────────────────────────────
 -- Login:  admin@physiocare.local  /  admin123
@@ -239,6 +257,7 @@ create index if not exists idx_equipment_clinic       on equipment(clinic_id);
 -- Ensure API roles can read/write (required for edit/delete via anon key)
 grant all on clinic_expenses to anon, authenticated, service_role;
 grant all on equipment       to anon, authenticated, service_role;
+grant all on staff_attendance to anon, authenticated, service_role;
 
 -- ── WhatsApp reminder settings ───────────────────────────────────────────────
 -- Behavior config only (no secrets). A single row with clinic_id = null is the

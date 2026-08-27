@@ -108,6 +108,23 @@ create table if not exists public.equipment (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.staff_attendance (
+  id uuid primary key default gen_random_uuid(),
+  staff_id uuid not null references public.profiles(id) on delete cascade,
+  clinic_id uuid references public.clinics(id) on delete set null,
+  attendance_date date not null,
+  slot text not null check (slot in ('morning', 'evening')),
+  status text not null check (status in ('present', 'absent')) default 'absent',
+  notes text not null default '',
+  updated_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  unique (staff_id, attendance_date, slot)
+);
+
+create index if not exists idx_staff_attendance_date on public.staff_attendance(attendance_date);
+create index if not exists idx_staff_attendance_staff on public.staff_attendance(staff_id);
+create index if not exists idx_staff_attendance_clinic on public.staff_attendance(clinic_id);
+
 alter table public.equipment add column if not exists quantity numeric(12,2) not null default 1;
 alter table public.equipment add column if not exists unit_price numeric(12,2);
 alter table public.equipment add column if not exists minimum_quantity numeric(12,2) not null default 0;
@@ -155,6 +172,7 @@ alter table public.patients enable row level security;
 alter table public.visits enable row level security;
 alter table public.therapy_sessions enable row level security;
 alter table public.equipment enable row level security;
+alter table public.staff_attendance enable row level security;
 
 create policy "Active users can view clinics in scope"
 on public.clinics for select
@@ -217,6 +235,16 @@ create policy "Equipment managed by clinic"
 on public.equipment for all
 using (public.can_access_clinic(clinic_id))
 with check (public.can_access_clinic(clinic_id));
+
+drop policy if exists "Admins manage staff attendance" on public.staff_attendance;
+drop policy if exists "allow_all_staff_attendance" on public.staff_attendance;
+
+create policy "allow_all_staff_attendance"
+on public.staff_attendance for all
+using (true)
+with check (true);
+
+grant all on public.staff_attendance to anon, authenticated, service_role;
 
 insert into public.clinics (name, address, phone)
 values

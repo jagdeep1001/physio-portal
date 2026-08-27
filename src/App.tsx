@@ -31,6 +31,7 @@ import {
   Upload,
   User,
   UserCheck,
+  UserRoundCheck,
   Users,
   X,
 } from 'lucide-react';
@@ -42,6 +43,7 @@ import {
   deleteClinicExpenseRecord,
   deleteEquipmentRecord,
   deleteReminderSettingsRecord,
+  deleteStaffAttendanceRecord,
   insertClinicExpense,
   insertEquipmentRecord,
   isSupabaseConfigured,
@@ -55,6 +57,7 @@ import {
   toTherapySessionRow,
   updateClinicExpenseRecord,
   updateEquipmentRecord,
+  upsertStaffAttendanceRecord,
 } from './lib/supabase';
 import {
   ACCEPTED_REPORT_TYPES,
@@ -109,6 +112,7 @@ import {
 } from './lib/datetime';
 import type {
   AppData,
+  AttendanceSlot,
   Clinic,
   ClinicExpense,
   Equipment,
@@ -130,6 +134,7 @@ import type {
   SessionType,
   SignupForm,
   StaffStatus,
+  StaffAttendanceRecord,
   TherapyLevel,
   TherapySession,
 } from './types';
@@ -146,6 +151,7 @@ type Page =
   | 'calendar'
   | 'clinics'
   | 'staff'
+  | 'staffAttendance'
   | 'expenses'
   | 'reminders';
 
@@ -257,6 +263,7 @@ function loadInitialData(): AppData {
       expenses:  (rest.expenses  ?? []) as ClinicExpense[],
       equipment: ((rest.equipment ?? []) as Equipment[]).map(normalizeEquipment),
       reminderSettings: (rest.reminderSettings ?? initialData.reminderSettings) as ReminderSettings[],
+      staffAttendance: (rest.staffAttendance ?? []) as StaffAttendanceRecord[],
     };
   } catch {
     return initialData;
@@ -533,7 +540,7 @@ export function App() {
     role === 'admin' ? 'dashboard' : 'sessions';
 
   const isAdminOnlyPage = (p: Page) =>
-    p === 'dashboard' || p === 'homeDashboard' || p === 'clinics' || p === 'staff' || p === 'expenses' || p === 'reminders';
+    p === 'dashboard' || p === 'homeDashboard' || p === 'clinics' || p === 'staff' || p === 'staffAttendance' || p === 'expenses' || p === 'reminders';
 
   const persist = (updater: (draft: AppData) => AppData) => {
     setData((current) => {
@@ -567,6 +574,10 @@ export function App() {
       patients: data.patients.filter((p) => p.clinicId === null || visibleClinicIds.includes(p.clinicId)),
       therapySessions: data.therapySessions.filter((s) => s.clinicId === null || visibleClinicIds.includes(s.clinicId)),
       payments: data.payments,
+      expenses: data.expenses,
+      equipment: data.equipment,
+      reminderSettings: data.reminderSettings,
+      staffAttendance: data.staffAttendance ?? [],
     };
   }, [currentUser?.role, data, visibleClinicIds]);
 
@@ -1242,6 +1253,48 @@ export function App() {
     }));
   };
 
+  const setStaffAttendance = async (
+    staff: Profile,
+    date: string,
+    slot: AttendanceSlot,
+    absent: boolean,
+    notes: string,
+  ) => {
+    const nextRecord: StaffAttendanceRecord = {
+      id: createDbId(),
+      staffId: staff.id,
+      clinicId: staff.clinicId,
+      date,
+      slot,
+      status: 'absent',
+      notes,
+      updatedBy: currentUser?.id ?? '',
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      try {
+        if (absent) {
+          await upsertStaffAttendanceRecord(nextRecord);
+        } else {
+          await deleteStaffAttendanceRecord(staff.id, date, slot);
+        }
+        await refreshRemoteData(); setSystemNotice('');
+      } catch (error) { reportRemoteError(error); throw error; }
+      return;
+    }
+
+    persist((draftData) => {
+      const existing = (draftData.staffAttendance ?? []).filter(
+        (record) => !(record.staffId === staff.id && record.date === date && record.slot === slot)
+      );
+      return {
+        ...draftData,
+        staffAttendance: absent ? [...existing, { ...nextRecord, id: createId('attendance') }] : existing,
+      };
+    });
+  };
+
   // ── Expenses CRUD ──
   const addExpense = async (expense: Omit<ClinicExpense, 'id'>) => {
     if (supabase) {
@@ -1343,6 +1396,7 @@ export function App() {
     { page: 'calendar', label: 'Calendar', icon: Calendar },
     { page: 'clinics', label: 'Clinics', icon: Building2, adminOnly: true },
     { page: 'staff', label: 'Staff', icon: UserCheck, adminOnly: true },
+    { page: 'staffAttendance', label: 'Staff Attendance', icon: UserRoundCheck, adminOnly: true },
     { page: 'expenses', label: 'Expenses & Equipment', icon: Receipt, adminOnly: true },
     { page: 'reminders', label: 'Reminders', icon: Bell, adminOnly: true },
   ];
@@ -1551,6 +1605,14 @@ export function App() {
             onUpdateProfile={updateProfile}
             onAddProfile={addProfile}
             onDeleteProfile={deleteProfile}
+          />
+        )}
+        {page === 'staffAttendance' && currentUser.role === 'admin' && (
+          <StaffAttendanceView
+            profiles={data.profiles}
+            clinics={data.clinics}
+            attendance={data.staffAttendance ?? []}
+            onSetAttendance={setStaffAttendance}
           />
         )}
         {page === 'expenses' && currentUser.role === 'admin' && (
@@ -7238,6 +7300,275 @@ function StaffCard({
   );
 }
 
+// ─── Staff Attendance View ───────────────────────────────────────────────────
+
+const ATTENDANCE_SLOTS: Array<{ value: AttendanceSlot; label: string }> = [
+  { value: 'morning', label: 'Morning' },
+  { value: 'evening', label: 'Evening' },
+];
+
+function attendanceKey(staffId: string, date: string, slot: AttendanceSlot) {
+  return `${staffId}:${date}:${slot}`;
+}
+
+function shiftDate(value: string, days: number) {
+  const date = parseAppDate(value);
+  date.setDate(date.getDate() + days);
+  return formatLocalDateFromDate(date);
+}
+
+function workingDaysInMonth(monthKey: string) {
+  const [year, month] = monthKey.split('-').map(Number);
+  if (!year || !month) return 0;
+  const date = new Date(year, month - 1, 1);
+  let count = 0;
+  while (date.getMonth() === month - 1) {
+    if (date.getDay() !== 0) count += 1;
+    date.setDate(date.getDate() + 1);
+  }
+  return count;
+}
+
+function isWorkingDate(value: string) {
+  return parseAppDate(value).getDay() !== 0;
+}
+
+function StaffAttendanceView({
+  profiles,
+  clinics,
+  attendance,
+  onSetAttendance,
+}: {
+  profiles: Profile[];
+  clinics: Clinic[];
+  attendance: StaffAttendanceRecord[];
+  onSetAttendance: (staff: Profile, date: string, slot: AttendanceSlot, absent: boolean, notes: string) => Promise<void>;
+}) {
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const [clinicFilter, setClinicFilter] = useState('all');
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState('');
+  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
+  const monthKey = selectedDate.slice(0, 7);
+
+  const activeStaff = profiles
+    .filter((profile) => profile.role === 'staff' && profile.status === 'active')
+    .filter((profile) => clinicFilter === 'all' || profile.clinicId === clinicFilter)
+    .sort((a, b) => (a.clinicId ?? '').localeCompare(b.clinicId ?? '') || a.name.localeCompare(b.name));
+
+  const attendanceMap = useMemo(() => {
+    const map = new Map<string, StaffAttendanceRecord>();
+    attendance.forEach((record) => {
+      map.set(attendanceKey(record.staffId, record.date, record.slot), record);
+    });
+    return map;
+  }, [attendance]);
+
+  const dayAbsent = activeStaff.reduce((sum, staff) => (
+    sum + ATTENDANCE_SLOTS.filter((slot) =>
+      attendanceMap.get(attendanceKey(staff.id, selectedDate, slot.value))?.status === 'absent'
+    ).length
+  ), 0);
+  const dayTotalSlots = activeStaff.length * ATTENDANCE_SLOTS.length;
+  const dayPresent = Math.max(0, dayTotalSlots - dayAbsent);
+  const dayRate = dayTotalSlots > 0 ? Math.round((dayPresent / dayTotalSlots) * 100) : 0;
+
+  const visibleStaffIds = new Set(activeStaff.map((staff) => staff.id));
+  const monthAbsent = attendance.filter((record) =>
+    record.status === 'absent' &&
+    record.date.startsWith(monthKey) &&
+    isWorkingDate(record.date) &&
+    visibleStaffIds.has(record.staffId)
+  ).length;
+  const monthTotalSlots = activeStaff.length * ATTENDANCE_SLOTS.length * workingDaysInMonth(monthKey);
+  const monthPresent = Math.max(0, monthTotalSlots - monthAbsent);
+  const monthRate = monthTotalSlots > 0 ? Math.round((monthPresent / monthTotalSlots) * 100) : 0;
+  const selectedStaff = selectedStaffId ? activeStaff.find((staff) => staff.id === selectedStaffId) ?? null : null;
+  const selectedStaffClinic = selectedStaff ? clinics.find((clinic) => clinic.id === selectedStaff.clinicId) : null;
+  const selectedStaffMonthAbsent = selectedStaff
+    ? attendance.filter((record) =>
+      record.staffId === selectedStaff.id &&
+      record.status === 'absent' &&
+      record.date.startsWith(monthKey) &&
+      isWorkingDate(record.date)
+    ).length
+    : 0;
+  const selectedStaffMonthTotal = selectedStaff ? ATTENDANCE_SLOTS.length * workingDaysInMonth(monthKey) : 0;
+  const selectedStaffMonthPresent = Math.max(0, selectedStaffMonthTotal - selectedStaffMonthAbsent);
+  const selectedStaffMonthRate = selectedStaffMonthTotal > 0 ? Math.round((selectedStaffMonthPresent / selectedStaffMonthTotal) * 100) : 0;
+  const selectedStaffAbsences = selectedStaff
+    ? attendance
+      .filter((record) => record.staffId === selectedStaff.id && record.status === 'absent')
+      .sort((a, b) => b.date.localeCompare(a.date) || a.slot.localeCompare(b.slot))
+    : [];
+
+  const saveSlot = async (staff: Profile, slot: AttendanceSlot, absent: boolean) => {
+    const key = attendanceKey(staff.id, selectedDate, slot);
+    const record = attendanceMap.get(key);
+    const notes = noteDrafts[key] ?? record?.notes ?? '';
+    setSavingKey(key);
+    try {
+      await onSetAttendance(staff, selectedDate, slot, absent, absent ? notes : '');
+      if (!absent) {
+        setNoteDrafts((drafts) => {
+          const next = { ...drafts };
+          delete next[key];
+          return next;
+        });
+      }
+    } finally {
+      setSavingKey('');
+    }
+  };
+
+  return (
+    <div className="content-stack staff-attendance-page">
+      {selectedStaff && (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setSelectedStaffId(null); }}>
+          <div className="modal-panel attendance-modal attendance-history-modal" style={{ maxWidth: 760 }}>
+            <div className="modal-accent modal-accent-teal" />
+            <div className="modal-header">
+              <div className="modal-header-icon"><UserRoundCheck size={18} /></div>
+              <div>
+                <h3 className="modal-title">{selectedStaff.name}</h3>
+                <p className="modal-sub">{selectedStaff.title} · {selectedStaffClinic?.name ?? 'Unassigned'}</p>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setSelectedStaffId(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="metric-grid attendance-metrics">
+                <MetricCard icon={Check} label="Month present" value={selectedStaffMonthPresent.toString()} accent="green" sub={`${selectedStaffMonthRate}% attendance`} />
+                <MetricCard icon={X} label="Month absent" value={selectedStaffMonthAbsent.toString()} accent="amber" sub={monthKey} />
+                <MetricCard icon={TrendingUp} label="Month total" value={selectedStaffMonthTotal.toString()} accent="blue" sub="Morning + evening" />
+              </div>
+              <div className="attendance-history-list">
+                <div className="section-heading">Recorded absences</div>
+                {selectedStaffAbsences.length === 0 ? (
+                  <EmptyState message="No absences recorded for this staff member." />
+                ) : (
+                  selectedStaffAbsences.map((record) => (
+                    <div key={record.id} className="attendance-history-row">
+                      <div>
+                        <strong>{formatDate(record.date)}</strong>
+                        <small>{ATTENDANCE_SLOTS.find((slot) => slot.value === record.slot)?.label ?? record.slot}</small>
+                      </div>
+                      <span>{record.notes || 'No note'}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="primary-button" type="button" onClick={() => setSelectedStaffId(null)}><Check size={14} /> Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <section className="panel">
+        <div className="toolbar attendance-toolbar">
+          <PanelTitle title="Staff attendance" subtitle="Morning and evening slots" />
+          <div className="attendance-controls">
+            <div className="attendance-date-control">
+              <button className="secondary-button icon-only" type="button" title="Previous day" onClick={() => setSelectedDate((date) => shiftDate(date, -1))}>
+                <ChevronLeft size={15} />
+              </button>
+              <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value || todayStr)} />
+              <button className="secondary-button icon-only" type="button" title="Next day" onClick={() => setSelectedDate((date) => shiftDate(date, 1))}>
+                <ChevronRight size={15} />
+              </button>
+            </div>
+            <select value={clinicFilter} onChange={(e) => setClinicFilter(e.target.value)}>
+              <option value="all">All clinics</option>
+              {clinics.filter((clinic) => clinic.active).map((clinic) => (
+                <option key={clinic.id} value={clinic.id}>{clinic.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="metric-grid attendance-metrics">
+          <MetricCard icon={Users} label="Staff" value={activeStaff.length.toString()} accent="teal" sub={`${dayTotalSlots} slots today`} />
+          <MetricCard icon={Check} label="Present today" value={dayPresent.toString()} accent="green" sub={`${dayRate}% attendance`} />
+          <MetricCard icon={X} label="Absent today" value={dayAbsent.toString()} accent="amber" sub="Morning + evening" />
+          <MetricCard icon={TrendingUp} label="Month rate" value={`${monthRate}%`} accent="blue" sub={`${monthPresent}/${monthTotalSlots} slots present`} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">Mark attendance for {formatDate(selectedDate)}</div>
+        {activeStaff.length === 0 ? (
+          <EmptyState message="No active staff found for this clinic." />
+        ) : (
+          <div className="attendance-table">
+            <div className="attendance-table-head">
+              <span>Staff</span>
+              {ATTENDANCE_SLOTS.map((slot) => <span key={slot.value}>{slot.label}</span>)}
+              <span>Overall</span>
+            </div>
+            {activeStaff.map((staff) => {
+              const clinic = clinics.find((item) => item.id === staff.clinicId);
+              return (
+                <div key={staff.id} className="attendance-row">
+                  <div className="attendance-staff">
+                    <div className="staff-card-avatar">{staff.name.charAt(0)}</div>
+                    <div>
+                      <strong>{staff.name}</strong>
+                      <small>{staff.title}</small>
+                      <span className="badge badge-teal">{clinic?.name ?? 'Unassigned'}</span>
+                    </div>
+                  </div>
+                  {ATTENDANCE_SLOTS.map((slot) => {
+                    const key = attendanceKey(staff.id, selectedDate, slot.value);
+                    const record = attendanceMap.get(key);
+                    const absent = record?.status === 'absent';
+                    const notes = noteDrafts[key] ?? record?.notes ?? '';
+                    return (
+                      <div key={slot.value} className={`attendance-slot-cell ${absent ? 'absent' : 'present'}`}>
+                        <div className="attendance-slot-label">{slot.label}</div>
+                        <div className="attendance-status-switch">
+                          <button
+                            type="button"
+                            className={!absent ? 'active present' : ''}
+                            disabled={savingKey === key}
+                            onClick={() => void saveSlot(staff, slot.value, false)}
+                          >
+                            Present
+                          </button>
+                          <button
+                            type="button"
+                            className={absent ? 'active absent' : ''}
+                            disabled={savingKey === key}
+                            onClick={() => void saveSlot(staff, slot.value, true)}
+                          >
+                            Absent
+                          </button>
+                        </div>
+                        {absent && (
+                          <input
+                            value={notes}
+                            onChange={(e) => setNoteDrafts((drafts) => ({ ...drafts, [key]: e.target.value }))}
+                            onBlur={() => void saveSlot(staff, slot.value, true)}
+                            placeholder="Absent note"
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div className="attendance-actions-cell">
+                    <button className="secondary-button" type="button" onClick={() => setSelectedStaffId(staff.id)}>
+                      <UserRoundCheck size={14} /> View attendance
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 // ─── Shared Components ────────────────────────────────────────────────────────
 
 function MetricCard({
@@ -8445,6 +8776,7 @@ function pageTitle(page: Page) {
     calendar: 'Clinic calendar',
     clinics: 'Clinics',
     staff: 'Staff access',
+    staffAttendance: 'Staff Attendance',
     expenses: 'Expenses & Equipment',
     reminders: 'WhatsApp reminders',
   };
