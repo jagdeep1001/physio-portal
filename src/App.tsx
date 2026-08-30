@@ -19,6 +19,7 @@ import {
   LogOut,
   MapPin,
   Minus,
+  MoreHorizontal,
   Phone,
   Plus,
   Receipt,
@@ -37,7 +38,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { FormEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { demoPasswords, initialData } from './data/mockData';
 import {
   deleteClinicExpenseRecord,
@@ -148,6 +149,7 @@ type Page =
   | 'sessions'
   | 'scheduleNew'
   | 'homeVisits'
+  | 'homeVisitCalendar'
   | 'calendar'
   | 'clinics'
   | 'staff'
@@ -540,7 +542,7 @@ export function App() {
     role === 'admin' ? 'dashboard' : 'sessions';
 
   const isAdminOnlyPage = (p: Page) =>
-    p === 'dashboard' || p === 'homeDashboard' || p === 'clinics' || p === 'staff' || p === 'staffAttendance' || p === 'expenses' || p === 'reminders';
+    p === 'dashboard' || p === 'homeDashboard' || p === 'homeVisitCalendar' || p === 'clinics' || p === 'staff' || p === 'staffAttendance' || p === 'expenses' || p === 'reminders';
 
   const persist = (updater: (draft: AppData) => AppData) => {
     setData((current) => {
@@ -1393,6 +1395,7 @@ export function App() {
     { page: 'patients', label: 'Patients', icon: Users },
     { page: 'sessions', label: 'Sessions', icon: CalendarDays },
     { page: 'homeVisits', label: 'Home Visits', icon: Home },
+    { page: 'homeVisitCalendar', label: 'Home Visit Calendar', icon: Calendar, adminOnly: true },
     { page: 'calendar', label: 'Calendar', icon: Calendar },
     { page: 'clinics', label: 'Clinics', icon: Building2, adminOnly: true },
     { page: 'staff', label: 'Staff', icon: UserCheck, adminOnly: true },
@@ -1563,6 +1566,17 @@ export function App() {
             onDeleteSession={deleteSession}
             onOpenPatient={goToPatientDetail}
             onClearPreset={() => setSchedulePreset({})}
+          />
+        )}
+        {page === 'homeVisitCalendar' && currentUser.role === 'admin' && (
+          <HomeVisitCalendarView
+            data={scoped}
+            staff={data.profiles}
+            onOpenPatient={goToPatientDetail}
+            onCompleteSession={completeSession}
+            onUpdateSession={updateSession}
+            onChangeStatus={changeSessionStatus}
+            onDeleteSession={deleteSession}
           />
         )}
         {page === 'scheduleNew' && (
@@ -4771,9 +4785,14 @@ function HomeVisitsView({
       scheduled: sessions.filter((s) => s.status === 'scheduled').length,
       completed: sessions.filter((s) => s.status === 'completed').length,
       missed: sessions.filter((s) => s.status === 'cancelled' || s.status === 'no_show').length,
+      allCompleted: sessions.length > 0 && sessions.every((s) => s.status !== 'scheduled'),
       next: sorted.find((s) => s.status === 'scheduled' && s.scheduledAt >= todayStr),
     };
-  }).sort((a, b) => (a.patient?.name ?? '').localeCompare(b.patient?.name ?? ''));
+  }).sort((a, b) => {
+    const aRank = a.scheduled > 0 ? 0 : a.allCompleted ? 2 : 1;
+    const bRank = b.scheduled > 0 ? 0 : b.allCompleted ? 2 : 1;
+    return aRank - bRank || (a.patient?.name ?? '').localeCompare(b.patient?.name ?? '');
+  });
 
   // Which patient cards are expanded to show sessions
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -4783,6 +4802,19 @@ function HomeVisitsView({
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+  const scheduleMoreForPatient = (nextPatientId: string) => {
+    setPatientId(nextPatientId);
+    setVisitCount(1);
+    setStartDate(todayStr);
+    setStartTime('09:00');
+    setStartTime2('11:00');
+    requestAnimationFrame(() => {
+      document.querySelector('.home-visit-scheduler')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+  const closeActionMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.currentTarget.closest('details')?.removeAttribute('open');
+  };
 
   return (
     <div className="content-stack">
@@ -4960,7 +4992,7 @@ function HomeVisitsView({
           <EmptyState message="No home visits scheduled yet" />
         ) : (
           <div className="hv-patient-list">
-            {groups.map(({ patient, patientId: gpId, sessions, total, scheduled, completed, missed, next }) => {
+            {groups.map(({ patient, patientId: gpId, sessions, total, scheduled, completed, missed, allCompleted, next }) => {
               const isOpen = expandedIds.has(gpId);
               const hvd = patient?.homeVisitDetails;
               const age = patient ? patientAgeValue(patient) : '';
@@ -4968,7 +5000,7 @@ function HomeVisitsView({
               const bulkEditableSessions = sessions.filter((s) => s.status === 'scheduled' || s.status === 'completed');
 
               return (
-                <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}`}>
+                <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}${allCompleted ? ' all-completed' : ''}`}>
                   {/* ── Collapsed header (always visible) ── */}
                   <div className="hv-card-header">
                     <div className="hv-card-avatar">{nameInitial(patient?.name)}</div>
@@ -4980,6 +5012,9 @@ function HomeVisitsView({
                         {age && <span className="hv-detail-chip">{age} yrs</span>}
                         {(patient ? patientCaseCondition(patient) : hvd?.condition) && (
                           <span className="hv-detail-chip hv-chip-condition">{patient ? patientCaseCondition(patient) : hvd?.condition}</span>
+                        )}
+                        {allCompleted && (
+                          <span className="hv-detail-chip hv-chip-completed"><Check size={11} /> All scheduled sessions done</span>
                         )}
                       </div>
 
@@ -5001,7 +5036,9 @@ function HomeVisitsView({
                         )}
                         {next
                           ? <span className="hv-meta-item hv-meta-next"><Activity size={11} /> Next: {formatDateTime(next.scheduledAt)}</span>
-                          : <span className="hv-meta-item hv-meta-none">No upcoming visit</span>
+                          : allCompleted
+                            ? <span className="hv-meta-item hv-meta-complete"><Check size={11} /> Ready to schedule more</span>
+                            : <span className="hv-meta-item hv-meta-none">No upcoming visit</span>
                         }
                       </div>
                     </div>
@@ -5016,35 +5053,57 @@ function HomeVisitsView({
 
                     {/* Controls */}
                     <div className="hv-card-controls">
-                      {bulkEditableSessions.length >= 2 && (
-                        <button
-                          type="button"
-                          className="secondary-button hv-bulk-edit-btn"
-                          title="Bulk edit scheduled and completed visits"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setBulkEditTarget({
-                              patientName: patient ? patientDisplayName(patient) : 'Patient',
-                              sessionType: 'home',
-                              sessions: bulkEditableSessions,
-                            });
-                          }}
-                        >
-                          <ClipboardList size={13} /> Bulk edit ({bulkEditableSessions.length})
-                        </button>
-                      )}
-                      <button className="ghost-button icon-only" title="Open patient record"
-                        onClick={(e) => { e.stopPropagation(); patient && onOpenPatient(patient.id); }}>
-                        <ExternalLink size={13} />
-                      </button>
-                      <button
-                        className={`hv-expand-btn${isOpen ? ' open' : ''}`}
-                        type="button"
-                        title={isOpen ? 'Collapse sessions' : `Show ${total} session${total !== 1 ? 's' : ''}`}
-                        onClick={() => toggleExpand(gpId)}>
-                        <ChevronRight size={15} className={`hv-chevron${isOpen ? ' rotated' : ''}`} />
-                        <span>{isOpen ? 'Hide' : `${total} session${total !== 1 ? 's' : ''}`}</span>
-                      </button>
+                      <details className="hv-actions-menu" onClick={(e) => e.stopPropagation()}>
+                        <summary aria-label={`${patient ? patientDisplayName(patient) : 'Patient'} actions`} title="Actions">
+                          <MoreHorizontal size={18} />
+                        </summary>
+                        <div className="hv-actions-menu-list">
+                          <button
+                            type="button"
+                            className={allCompleted ? 'primary-menu-action' : ''}
+                            onClick={(e) => {
+                              closeActionMenu(e);
+                              scheduleMoreForPatient(gpId);
+                            }}
+                          >
+                            <Plus size={13} /> Schedule more
+                          </button>
+                          {bulkEditableSessions.length >= 2 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                closeActionMenu(e);
+                                setBulkEditTarget({
+                                  patientName: patient ? patientDisplayName(patient) : 'Patient',
+                                  sessionType: 'home',
+                                  sessions: bulkEditableSessions,
+                                });
+                              }}
+                            >
+                              <ClipboardList size={13} /> Bulk edit ({bulkEditableSessions.length})
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              closeActionMenu(e);
+                              patient && onOpenPatient(patient.id);
+                            }}
+                          >
+                            <ExternalLink size={13} /> Patient details
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              closeActionMenu(e);
+                              toggleExpand(gpId);
+                            }}
+                          >
+                            <ChevronRight size={13} className={`hv-chevron${isOpen ? ' rotated' : ''}`} />
+                            {isOpen ? 'Hide sessions' : `Show ${total} session${total !== 1 ? 's' : ''}`}
+                          </button>
+                        </div>
+                      </details>
                     </div>
                   </div>
 
@@ -6786,6 +6845,369 @@ function CalendarView({
                         <button type="button" className="day-slot-add-more" onClick={() => handleBookSlot(time)}>
                           <Plus size={10} /> Add patient
                         </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Home Visit Calendar View ────────────────────────────────────────────────
+
+function HomeVisitCalendarView({
+  data, staff, onOpenPatient, onCompleteSession, onUpdateSession, onChangeStatus, onDeleteSession,
+}: {
+  data: Pick<AppData, 'clinics' | 'patients' | 'therapySessions' | 'payments'>;
+  staff: Profile[];
+  onOpenPatient: (patientId: string) => void;
+  onCompleteSession: (sessionId: string, updates: Partial<TherapySession>, paymentReceived: number | null) => void;
+  onUpdateSession: (sessionId: string, updates: Partial<TherapySession>) => void;
+  onChangeStatus: (sessionId: string, status: SessionStatus) => void;
+  onDeleteSession: (sessionId: string) => void;
+}) {
+  const now = new Date();
+  const [view, setView] = useState<'month' | 'day'>('day');
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth());
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const [selectedPatientId, setSelectedPatientId] = useState('all');
+  const [popover, setPopover] = useState<TherapySession | null>(null);
+  const [editingSession, setEditingSession] = useState<TherapySession | null>(null);
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [completionData, setCompletionData] = useState<CompletionFormData>(emptyCompletionForm);
+
+  const homeSessions = data.therapySessions.filter((session) => session.sessionType === 'home');
+  const homePatientIds = new Set(homeSessions.map((session) => session.patientId));
+  const homePatients = data.patients
+    .filter((patient) => patient.homeVisitDetails || homePatientIds.has(patient.id))
+    .sort((a, b) => patientDisplayName(a).localeCompare(patientDisplayName(b)));
+  const filteredSessions = homeSessions.filter((session) =>
+    selectedPatientId === 'all' || session.patientId === selectedPatientId
+  );
+  const sessionsByDate = (date: string) => filteredSessions.filter((session) => sessionOnDate(session.scheduledAt, date));
+  const daySessions = filteredSessions.filter((session) => sessionOnDate(session.scheduledAt, selectedDate));
+  const sessionsAt = (time: string) => daySessions.filter((session) => sessionTimeKey(session.scheduledAt) === time);
+
+  const prevMonth = () => { if (month === 0) { setMonth(11); setYear((value) => value - 1); } else setMonth((value) => value - 1); };
+  const nextMonth = () => { if (month === 11) { setMonth(0); setYear((value) => value + 1); } else setMonth((value) => value + 1); };
+  const shiftDay = (delta: number) => {
+    const date = new Date(`${selectedDate}T12:00`);
+    date.setDate(date.getDate() + delta);
+    setSelectedDate(formatLocalDateFromDate(date));
+  };
+
+  const monthName = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month));
+  const dayLabel = new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    .format(new Date(`${selectedDate}T12:00`));
+  const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const monthSessions = filteredSessions.filter((session) => sessionInMonth(session.scheduledAt, monthStr));
+  const monthScheduled = monthSessions.filter((session) => session.status === 'scheduled').length;
+  const monthCompleted = monthSessions.filter((session) => session.status === 'completed').length;
+  const monthMissed = monthSessions.filter((session) => session.status === 'cancelled' || session.status === 'no_show').length;
+
+  const firstDayOfMonth = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const totalCells = Math.ceil((firstDayOfMonth + daysInMonth) / 7) * 7;
+  const cells: Array<{ date: number | null; dateStr: string | null }> = [];
+  for (let i = 0; i < totalCells; i += 1) {
+    const dayNum = i - firstDayOfMonth + 1;
+    if (dayNum < 1 || dayNum > daysInMonth) {
+      cells.push({ date: null, dateStr: null });
+    } else {
+      cells.push({
+        date: dayNum,
+        dateStr: `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`,
+      });
+    }
+  }
+
+  const submitCompletion = (e: FormEvent) => {
+    e.preventDefault();
+    if (!completingId || !completionData.therapyType.trim()) return;
+    onCompleteSession(completingId, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      therapyType: completionData.therapyType.trim(),
+      treatmentNotes: completionData.treatmentNotes,
+      amountCollected: completionData.amountCollected ? parseFloat(completionData.amountCollected) : null,
+    }, completionData.paymentReceived ? parseFloat(completionData.paymentReceived) : null);
+    setCompletingId(null);
+    setCompletionData(emptyCompletionForm());
+  };
+
+  const startCompletion = (session: TherapySession) => {
+    setPopover(null);
+    setCompletingId(session.id);
+    setCompletionData(completionFormFromSession(session, data.therapySessions));
+  };
+
+  const renderPopover = () => {
+    if (!popover) return null;
+    const patient = data.patients.find((item) => item.id === popover.patientId);
+    const therapistName = sessionDoctorName(popover, patient, staff);
+    const dateDisp = new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+      .format(parseScheduledAt(popover.scheduledAt));
+    return (
+      <div className="modal-backdrop" onClick={() => setPopover(null)}>
+        <div className="cal-popover" onClick={(e) => e.stopPropagation()}>
+          <div className={`cal-popover-header home status-${popover.status}`}>
+            <div className="cal-popover-title-row">
+              <span className="cal-popover-icon"><Home size={16} /></span>
+              <div>
+                <h3 className="cal-popover-title">{formatTherapyTypeDisplay(popover.therapyType)}</h3>
+                <p className="cal-popover-sub">{dateDisp} · {formatSessionTime(popover.scheduledAt)}</p>
+              </div>
+            </div>
+            <button className="cal-popover-close" onClick={() => setPopover(null)}><X size={16} /></button>
+          </div>
+          <div className="cal-popover-badges">
+            <span className={`status ${popover.status}`}>{statusLabel(popover.status)}</span>
+            <span className={`therapy-level-badge ${popover.therapyLevel ?? 'basic'}`}>{popover.therapyLevel ?? 'basic'}</span>
+            <span className="badge badge-amber"><Home size={10} />Home visit</span>
+          </div>
+          <div className="cal-popover-rows">
+            <div className="cal-popover-row"><Users size={14} /><div>
+              <span className="cal-row-label">Patient</span>
+              <button className="ghost-link cal-row-value" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
+                {patient ? patientDisplayName(patient) : 'Unknown'} ↗
+              </button>
+            </div></div>
+            <div className="cal-popover-row"><UserCheck size={14} /><div>
+              <span className="cal-row-label">Doctor / therapist</span>
+              <span className="cal-row-value">{therapistName || '—'}</span>
+            </div></div>
+            <div className="cal-popover-row"><Clock size={14} /><div>
+              <span className="cal-row-label">Date &amp; time</span>
+              <span className="cal-row-value">{dateDisp} at {formatSessionTime(popover.scheduledAt)}</span>
+            </div></div>
+            {popover.amountCollected !== null && (
+              <div className="cal-popover-row"><DollarSign size={14} /><div>
+                <span className="cal-row-label">{popover.status === 'completed' ? 'Fee' : 'Estimated amount'}</span>
+                <span className="cal-row-value">{formatCurrency(popover.amountCollected)}</span>
+              </div></div>
+            )}
+            {popover.notes && (
+              <div className="cal-popover-row"><FileText size={14} /><div>
+                <span className="cal-row-label">Notes</span>
+                <span className="cal-row-value">{popover.notes}</span>
+              </div></div>
+            )}
+          </div>
+          <div className="cal-popover-actions">
+            {(popover.status === 'scheduled' || popover.status === 'completed') && (
+              <button className="secondary-button" onClick={() => { setEditingSession(popover); setPopover(null); }}>
+                <ClipboardList size={14} /> {popover.status === 'completed' ? 'Edit completed' : 'Edit session'}
+              </button>
+            )}
+            {popover.status === 'scheduled' && (
+              <>
+                <button className="primary-button" onClick={() => startCompletion(popover)}>
+                  <Check size={14} /> Mark completed
+                </button>
+                <button className="ghost-button" onClick={() => { onChangeStatus(popover.id, 'no_show'); setPopover(null); }}>
+                  No show
+                </button>
+                <button className="ghost-button" onClick={() => { onChangeStatus(popover.id, 'cancelled'); setPopover(null); }}>
+                  <X size={14} /> Cancel
+                </button>
+                <button className="danger-button" onClick={() => { void onDeleteSession(popover.id); setPopover(null); }}>
+                  <Trash2 size={14} /> Delete
+                </button>
+              </>
+            )}
+            <button className="primary-button" onClick={() => { onOpenPatient(popover.patientId); setPopover(null); }}>
+              <Users size={14} /> View patient
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="content-stack home-visit-calendar-page">
+      {renderPopover()}
+      {completingId && (
+        <CompleteSessionModal
+          title="Complete home visit"
+          subtitle="Record therapy, treatment notes and amount collected"
+          accentClass="modal-accent-teal"
+          icon={<Home size={18} />}
+          data={completionData}
+          onChange={(updates) => setCompletionData((prev) => ({ ...prev, ...updates }))}
+          onSubmit={submitCompletion}
+          onClose={() => { setCompletingId(null); setCompletionData(emptyCompletionForm()); }}
+        />
+      )}
+      {editingSession && (
+        <EditSessionModal
+          session={editingSession}
+          data={data}
+          lockSessionType="home"
+          onSave={(updates) => { onUpdateSession(editingSession.id, updates); setEditingSession(null); }}
+          onDelete={() => { void onDeleteSession(editingSession.id); setEditingSession(null); }}
+          onClose={() => setEditingSession(null)}
+        />
+      )}
+
+      <div className="calendar-toolbar">
+        <div className="cal-nav-group">
+          <div className="view-toggle">
+            <button className={`view-toggle-btn${view === 'day' ? ' active' : ''}`} onClick={() => setView('day')}>
+              <Clock size={14} /> Day
+            </button>
+            <button className={`view-toggle-btn${view === 'month' ? ' active' : ''}`} onClick={() => setView('month')}>
+              <CalendarDays size={14} /> Month
+            </button>
+          </div>
+          {view === 'month' ? (
+            <>
+              <button className="ghost-button icon-only" onClick={prevMonth}><ChevronLeft size={18} /></button>
+              <h2 className="calendar-month-title">{monthName}</h2>
+              <button className="ghost-button icon-only" onClick={nextMonth}><ChevronRight size={18} /></button>
+              <button className="ghost-button cal-today-btn" onClick={() => { setMonth(now.getMonth()); setYear(now.getFullYear()); }}>Today</button>
+            </>
+          ) : (
+            <>
+              <button className="ghost-button icon-only" onClick={() => shiftDay(-1)}><ChevronLeft size={18} /></button>
+              <h2 className="calendar-month-title">{dayLabel}</h2>
+              <button className="ghost-button icon-only" onClick={() => shiftDay(1)}><ChevronRight size={18} /></button>
+              <button className="ghost-button cal-today-btn" onClick={() => setSelectedDate(todayStr)}>Today</button>
+            </>
+          )}
+        </div>
+        <div className="cal-toolbar-right">
+          <div className="cal-month-stats">
+            <span className="cal-stat home"><Home size={11} />{monthSessions.length} visits</span>
+            <span className="cal-stat scheduled"><Activity size={11} />{monthScheduled} scheduled</span>
+            <span className="cal-stat completed"><Check size={11} />{monthCompleted} done</span>
+            {monthMissed > 0 && <span className="cal-stat cancelled"><X size={11} />{monthMissed} missed</span>}
+          </div>
+          <select className="clinic-selector" value={selectedPatientId} onChange={(e) => setSelectedPatientId(e.target.value)}>
+            <option value="all">All home visit patients</option>
+            {homePatients.map((patient) => (
+              <option key={patient.id} value={patient.id}>{patientDisplayName(patient)}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {view === 'month' && (
+        <>
+          <section className="calendar-grid-wrapper panel">
+            <div className="calendar-header-row">
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, index) => (
+                <div key={day} className={`calendar-dow ${index === 0 || index === 6 ? 'weekend' : ''}`}>{day}</div>
+              ))}
+            </div>
+            <div className="calendar-grid">
+              {cells.map((cell, index) => {
+                const sessions = cell.dateStr ? sessionsByDate(cell.dateStr) : [];
+                const isToday = cell.dateStr === todayStr;
+                const isWeekend = index % 7 === 0 || index % 7 === 6;
+                return (
+                  <div
+                    key={index}
+                    className={`calendar-cell${!cell.date ? ' empty' : ''}${isToday ? ' today' : ''}${isWeekend ? ' weekend' : ''}${sessions.length > 0 ? ' has-sessions' : ''}`}
+                  >
+                    {cell.date !== null && (
+                      <>
+                        <div className="calendar-date-row">
+                          <span className="calendar-date">{cell.date}</span>
+                          {cell.dateStr && (
+                            <button className="day-view-link" title="Open day view" onClick={() => { setSelectedDate(cell.dateStr!); setView('day'); }}>
+                              <Clock size={11} />
+                            </button>
+                          )}
+                        </div>
+                        <div className="calendar-sessions">
+                          {sessions.slice(0, 3).map((session) => {
+                            const patient = data.patients.find((item) => item.id === session.patientId);
+                            return (
+                              <button
+                                key={session.id}
+                                className={`cal-session-chip home level-${session.therapyLevel ?? 'basic'} status-${session.status}`}
+                                onClick={() => setPopover(session)}
+                                title={`${patient ? patientDisplayName(patient) : 'Unknown'} · ${formatSessionTime(session.scheduledAt)} [${session.therapyLevel ?? 'basic'}]`}
+                              >
+                                <Home size={9} />
+                                <span className="chip-time">{formatSessionTime(session.scheduledAt)}</span>
+                                <span className="chip-label">{patient ? patientDisplayName(patient).slice(0, 16) : 'Unknown'}</span>
+                              </button>
+                            );
+                          })}
+                          {sessions.length > 3 && (
+                            <button className="cal-more" onClick={() => { setSelectedDate(cell.dateStr!); setView('day'); }}>
+                              +{sessions.length - 3} more
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+          <div className="calendar-legend">
+            <span className="legend-item"><span className="legend-dot home" />Home visit · scheduled</span>
+            <span className="legend-item"><span className="legend-dot completed" />Completed</span>
+            <span className="legend-item"><span className="legend-dot cancelled" />Cancelled / No-show</span>
+            <span className="legend-item"><span className="legend-bar rehab" />Rehab level</span>
+            <span className="legend-item"><span className="legend-bar advance" />Advance level</span>
+          </div>
+        </>
+      )}
+
+      {view === 'day' && (
+        <div className="panel day-view-panel">
+          <div className="day-view-header home-only">
+            <div className="day-time-gutter" />
+            <div className="day-col-header home-col">
+              <Home size={14} />
+              <span>Home visits</span>
+              <small>9:00 AM – 6:00 PM</small>
+            </div>
+          </div>
+          <div className="day-view-grid">
+            {HOME_VISIT_SLOTS.map((time) => {
+              const sessions = sessionsAt(time);
+              const isHour = time.endsWith(':00');
+              return (
+                <div key={time} className={`day-slot-row home-only${isHour ? ' hour-boundary' : ''}`}>
+                  <div className="day-time-label">
+                    {isHour && <span>{time.startsWith('0') ? time.replace(/^0/, '') : time}</span>}
+                  </div>
+                  <div className="day-slot">
+                    {sessions.length === 0 ? (
+                      <div className="day-slot-empty disabled"><span>No visit</span></div>
+                    ) : (
+                      <div className="day-slot-stack">
+                        {sessions.map((session) => {
+                          const patient = data.patients.find((item) => item.id === session.patientId);
+                          return (
+                            <button
+                              key={session.id}
+                              className={`day-slot-booked home compact level-${session.therapyLevel ?? 'basic'} status-${session.status}`}
+                              onClick={() => setPopover(session)}
+                            >
+                              <div className="slot-booked-top">
+                                <span className="slot-patient">{patient ? patientDisplayName(patient) : 'Unknown'}</span>
+                                <span className={`therapy-level-badge sm ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
+                              </div>
+                              <div className="slot-booked-bottom">
+                                <span className="slot-therapy">{formatTherapyTypeDisplay(session.therapyType)}</span>
+                                <span className={`status sm ${session.status}`}>{statusLabel(session.status)}</span>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -8773,6 +9195,7 @@ function pageTitle(page: Page) {
     sessions: 'Sessions',
     scheduleNew: 'Schedule sessions',
     homeVisits: 'Home Visits',
+    homeVisitCalendar: 'Home Visit Calendar',
     calendar: 'Clinic calendar',
     clinics: 'Clinics',
     staff: 'Staff access',

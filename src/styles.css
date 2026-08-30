@@ -2146,6 +2146,7 @@ textarea { min-height: 76px; resize: vertical; }
 }
 .cal-stat.scheduled { background: var(--blue-light); color: #1d4ed8; }
 .cal-stat.completed { background: var(--green-light); color: var(--green-dark); }
+.cal-stat.cancelled { background: #fee2e2; color: #991b1b; }
 .cal-stat.home      { background: var(--amber-light); color: var(--amber-dark); }
 .cal-stat.revenue   { background: var(--teal-light);  color: var(--teal-dark); }
 .clinic-selector {
@@ -3628,6 +3629,10 @@ textarea { min-height: 76px; resize: vertical; }
   min-height: 44px;
   border-bottom: 1px solid var(--border);
 }
+.day-slot-row.home-only,
+.day-view-header.home-only {
+  grid-template-columns: 56px 1fr;
+}
 .day-slot-row.hour-boundary {
   border-bottom-color: var(--border);
 }
@@ -3691,6 +3696,13 @@ textarea { min-height: 76px; resize: vertical; }
   opacity: 1;
   background: var(--bg);
   color: var(--teal-dark);
+}
+.day-slot-empty.disabled,
+.day-slot:hover .day-slot-empty.disabled {
+  cursor: default;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.45;
 }
 
 /* ── Booked slot button ── */
@@ -4323,11 +4335,18 @@ textarea { min-height: 76px; resize: vertical; }
   background: var(--surface);
   border: 1.5px solid var(--border);
   border-radius: 14px;
-  overflow: hidden;
+  overflow: visible;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .hv-patient-card:hover { border-color: var(--teal); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .hv-patient-card.open  { border-color: var(--teal); }
+.hv-patient-card.all-completed {
+  border-color: #bbf7d0;
+  background: linear-gradient(180deg, #fbfffd 0%, var(--surface) 100%);
+}
+.hv-patient-card.all-completed:hover {
+  border-color: var(--green);
+}
 
 /* Card header — always visible */
 .hv-card-header {
@@ -4372,6 +4391,14 @@ textarea { min-height: 76px; resize: vertical; }
   white-space: nowrap;
 }
 .hv-chip-condition { background: #ede9fe; border-color: #c4b5fd; color: #5b21b6; }
+.hv-chip-completed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--green-light);
+  border-color: #86efac;
+  color: var(--green-dark);
+}
 
 .hv-card-meta-row {
   display: flex;
@@ -4387,6 +4414,7 @@ textarea { min-height: 76px; resize: vertical; }
   color: var(--slate);
 }
 .hv-meta-next  { color: var(--teal-dark); font-weight: 600; }
+.hv-meta-complete { color: var(--green-dark); font-weight: 700; }
 .hv-meta-none  { color: var(--muted); font-size: 0.72rem; }
 
 /* Stats pills */
@@ -4414,6 +4442,69 @@ textarea { min-height: 76px; resize: vertical; }
 
 /* Controls */
 .hv-card-controls { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.hv-actions-menu {
+  position: relative;
+}
+.hv-actions-menu summary {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--slate);
+  cursor: pointer;
+  list-style: none;
+}
+.hv-actions-menu summary::-webkit-details-marker {
+  display: none;
+}
+.hv-actions-menu summary:hover,
+.hv-actions-menu[open] summary {
+  border-color: var(--teal);
+  background: #f0fdfa;
+  color: var(--teal-dark);
+}
+.hv-actions-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 190px;
+  display: grid;
+  gap: 3px;
+  padding: 6px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
+}
+.hv-actions-menu-list button {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--slate);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  padding: 0 10px;
+}
+.hv-actions-menu-list button:hover {
+  background: var(--bg);
+  color: var(--teal-dark);
+}
+.hv-actions-menu-list button.primary-menu-action {
+  background: var(--teal-light);
+  color: var(--teal-dark);
+}
 
 .hv-expand-btn {
   display: flex;
