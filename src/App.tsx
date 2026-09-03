@@ -19,7 +19,6 @@ import {
   LogOut,
   MapPin,
   Minus,
-  MoreHorizontal,
   Phone,
   Plus,
   Receipt,
@@ -38,7 +37,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import { demoPasswords, initialData } from './data/mockData';
 import {
   deleteClinicExpenseRecord,
@@ -70,7 +69,7 @@ import {
 } from './lib/r2';
 import { InvoiceModal } from './components/InvoiceModal';
 import type { InvoiceMode } from './lib/invoice';
-import { formatTherapyTypeDisplay, splitTherapyTypes, THERAPY_GROUPS, THERAPY_SEPARATOR } from './lib/therapy';
+import { formatTherapyTypeDisplay, groupedTherapyTypes, inferredTherapyLevel, splitTherapyTypes, THERAPY_GROUPS, THERAPY_SEPARATOR } from './lib/therapy';
 import {
   allocatePatientCredit,
   allocatedTotal,
@@ -1470,7 +1469,9 @@ export function App() {
       <main className="main" ref={mainRef}>
         <header className="topbar">
           <div>
-            <p className="eyebrow">{currentUser.role === 'admin' ? 'Global admin view' : 'Clinic staff view'}</p>
+            {page !== 'homeVisitCalendar' && page !== 'homeDashboard' && (
+              <p className="eyebrow">{currentUser.role === 'admin' ? 'Global admin view' : 'Clinic staff view'}</p>
+            )}
             <h1>{pageTitle(page)}</h1>
           </div>
           {/* <div className="topbar-actions">
@@ -2122,7 +2123,7 @@ function Dashboard({
                   <div key={session.id} className="compact-row">
                     <span className={`compact-type-dot ${session.sessionType}`} />
                     <div className="compact-info">
-                      <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
+                      <TherapyTypeSummary value={session.therapyType} compact />
                       <small>{patient ? patientDisplayName(patient) : '—'}{patient?.gender ? ` · ${patient.gender}` : ''} · {formatDateTime(session.scheduledAt)}</small>
                     </div>
                     <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
@@ -2257,7 +2258,11 @@ function HomeDashboard({
   const homePatients = data.patients.filter((p) => p.homeVisitDetails || homePatientIds.has(p.id));
   const completed = homeSessions.filter((s) => s.status === 'completed');
   const scheduled = homeSessions.filter((s) => s.status === 'scheduled');
-  const todayHome = homeSessions.filter((s) => sessionOnDate(s.scheduledAt, today)).length;
+  const todaySessions = homeSessions
+    .filter((s) => sessionOnDate(s.scheduledAt, today))
+    .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+  const todayHome = todaySessions.length;
+  const [showTodaySessions, setShowTodaySessions] = useState(false);
   const upcoming = scheduled
     .filter((s) => s.scheduledAt >= today)
     .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))
@@ -2289,23 +2294,46 @@ function HomeDashboard({
 
   return (
     <div className="content-stack home-dashboard">
-      <section className="panel home-dashboard-hero">
-        <div>
-          <p className="eyebrow">Home care operations</p>
-          <h2>Home Visit Dashboard</h2>
-          <p>Focused view for caregiver-linked patients, home schedules, completions, and collections.</p>
-        </div>
-        <Home size={38} />
-      </section>
-
       <section className="metric-grid metric-grid-5">
         <MetricCard icon={Users} label="Home patients" value={homePatients.length.toString()} accent="teal" />
-        <MetricCard icon={CalendarDays} label="Today" value={todayHome.toString()} accent="amber" />
+        <MetricCard
+          icon={CalendarDays}
+          label="Today"
+          value={todayHome.toString()}
+          accent="blue"
+          sub={showTodaySessions ? 'Showing today sessions' : 'Click to view sessions'}
+          onClick={() => setShowTodaySessions((value) => !value)}
+        />
         <MetricCard icon={Activity} label="Upcoming" value={upcoming.length.toString()} accent="blue" />
         <MetricCard icon={Check} label="Completed" value={completed.length.toString()} accent="green" />
         <MetricCard icon={DollarSign} label="Actual revenue" value={formatCurrency(revenue)} accent="green"
           sub="Completed visits with payment" />
       </section>
+
+      {showTodaySessions && (
+        <section className="panel home-today-panel">
+          <PanelTitle title="Today's home visits" subtitle={formatDate(today)} />
+          {todaySessions.length === 0 ? (
+            <EmptyState message="No home visits scheduled today" />
+          ) : (
+            <div className="compact-list">
+              {todaySessions.map((session) => {
+                const patient = data.patients.find((p) => p.id === session.patientId);
+                return (
+                  <button key={session.id} className="compact-row clickable" onClick={() => patient && onOpenPatient(patient.id)}>
+                    <span className="compact-type-dot home" />
+                    <div className="compact-info">
+                      <strong>{patient ? patientDisplayName(patient) : 'Unknown patient'} {patient?.gender && <span className="patient-gender-chip">{patient.gender}</span>}</strong>
+                      <small>{formatSessionTime(session.scheduledAt)} · {formatTherapyTypeDisplay(session.therapyType)}</small>
+                    </div>
+                    <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="metric-grid metric-grid-2">
         <MetricCard icon={TrendingUp} label="Estimated revenue" value={estimatedRevenue > 0 ? formatCurrency(estimatedRevenue) : '—'}
@@ -3179,7 +3207,7 @@ function PatientDetailView({
                     </div>
                     <div className="pp-session-body">
                       <div className="pp-session-top">
-                        <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
+                        <TherapyTypeSummary value={session.therapyType} compact />
                         <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
                       </div>
                       <div className="pp-session-meta">
@@ -3461,7 +3489,7 @@ function HomeVisitPanel({
                   <span className={`status ${session.status}`}>{statusLabel(session.status)}</span>
                   <span className="badge badge-amber"><Home size={12} /> Home visit</span>
                   <span className={`therapy-level-badge ${session.therapyLevel}`}>{session.therapyLevel}</span>
-                  <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
+                  <TherapyTypeSummary value={session.therapyType} compact />
                   <small>{formatDateTime(session.scheduledAt)}</small>
                 </div>
                 {therapist && <small>Therapist: {therapist.name}</small>}
@@ -4010,7 +4038,7 @@ function PatientForm({
           Case / condition
           <input
             list={caseListId}
-            value={patientCaseCondition(draft)}
+            value={draft.caseType ?? ''}
             onChange={(e) => setDraft({ ...draft, caseType: e.target.value, condition: '' })}
             placeholder="Choose or type case / condition"
           />
@@ -4562,7 +4590,7 @@ function SessionsView({
                                       <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
                                     </div>
                                     <div className="group-session-info">
-                                      <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
+                                      <TherapyTypeSummary value={session.therapyType} compact />
                                       <div className="group-session-meta">
                                         <small className="group-session-clinic">
                                           <Building2 size={10} /> {clinicName(allClinics, session.clinicId)}
@@ -4676,10 +4704,8 @@ function HomeVisitsView({
   const homePatients = data.patients.filter((p) => p.homeVisitDetails || homePatientIds.has(p.id) || p.id === preset.patientId);
   const [patientId, setPatientId] = useState(preset.patientId ?? homePatients[0]?.id ?? '');
   const [therapyType, setTherapyType] = useState('');
-  const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>('basic');
   const [dualTherapy, setDualTherapy] = useState(false);
   const [therapyType2, setTherapyType2] = useState('');
-  const [therapyLevel2, setTherapyLevel2] = useState<TherapyLevel>('basic');
   const [startDate, setStartDate] = useState(todayStr);
   const [startTime, setStartTime] = useState('09:00');
   const [startTime2, setStartTime2] = useState('11:00');
@@ -4741,14 +4767,14 @@ function HomeVisitsView({
         ...base,
         scheduledAt: formatLocalDateTimeFromDate(d, startTime),
         therapyType: therapyType.trim(),
-        therapyLevel,
+        therapyLevel: inferredTherapyLevel(therapyType),
       });
       if (dualTherapy && therapyType2.trim()) {
         onAddSession({
           ...base,
           scheduledAt: formatLocalDateTimeFromDate(d, startTime2),
           therapyType: therapyType2.trim(),
-          therapyLevel: therapyLevel2,
+          therapyLevel: inferredTherapyLevel(therapyType2),
         });
       }
     }
@@ -4811,9 +4837,6 @@ function HomeVisitsView({
     requestAnimationFrame(() => {
       document.querySelector('.home-visit-scheduler')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
-  };
-  const closeActionMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.currentTarget.closest('details')?.removeAttribute('open');
   };
 
   return (
@@ -4885,38 +4908,18 @@ function HomeVisitsView({
                   onClick={() => setDualTherapy((v) => !v)}
                 >
                   <Plus size={13} /> {dualTherapy ? 'Dual slot on' : 'Add 2nd slot'}
-                </button>
-              </div>
-              <TherapyTypeSelect required value={therapyType} onChange={setTherapyType} />
-              <div className="toggle-row" style={{ marginTop: 6 }}>
-                {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
-                  <button key={lvl} type="button"
-                    className={`toggle-btn level-${lvl} ${therapyLevel === lvl ? 'active' : ''}`}
-                    onClick={() => setTherapyLevel(lvl)}
-                  >
-                    {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-                  </button>
-                ))}
-              </div>
+              </button>
             </div>
+            <TherapyTypeSelect required value={therapyType} onChange={setTherapyType} />
+          </div>
 
             {dualTherapy && (
               <div className="dual-therapy-block second home-dual-block">
-                <div className="dual-therapy-header">
-                  <label className="dual-therapy-label">Therapy 2</label>
-                </div>
-                <TherapyTypeSelect required value={therapyType2} onChange={setTherapyType2} />
-                <div className="toggle-row" style={{ marginTop: 6 }}>
-                  {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
-                    <button key={lvl} type="button"
-                      className={`toggle-btn level-${lvl} ${therapyLevel2 === lvl ? 'active' : ''}`}
-                      onClick={() => setTherapyLevel2(lvl)}
-                    >
-                      {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-                    </button>
-                  ))}
-                </div>
+              <div className="dual-therapy-header">
+                <label className="dual-therapy-label">Therapy 2</label>
               </div>
+              <TherapyTypeSelect required value={therapyType2} onChange={setTherapyType2} />
+            </div>
             )}
 
             <label>
@@ -5002,12 +5005,44 @@ function HomeVisitsView({
               return (
                 <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}${allCompleted ? ' all-completed' : ''}`}>
                   {/* ── Collapsed header (always visible) ── */}
-                  <div className="hv-card-header">
-                    <div className="hv-card-avatar">{nameInitial(patient?.name)}</div>
+                  <div
+                    className="hv-card-header"
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={isOpen}
+                    onClick={() => toggleExpand(gpId)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggleExpand(gpId);
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="hv-card-avatar hv-profile-trigger"
+                      title="Open patient profile"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        patient && onOpenPatient(patient.id);
+                      }}
+                    >
+                      {nameInitial(patient?.name)}
+                    </button>
 
                     <div className="hv-card-main">
                       <div className="hv-card-name-row">
-                        <span className="hv-card-name">{patient ? patientDisplayName(patient) : 'Unknown patient'}</span>
+                        <button
+                          type="button"
+                          className="hv-card-name"
+                          title="Open patient profile"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            patient && onOpenPatient(patient.id);
+                          }}
+                        >
+                          {patient ? patientDisplayName(patient) : 'Unknown patient'}
+                        </button>
                         {patient?.gender && <span className="hv-detail-chip">{patient.gender}</span>}
                         {age && <span className="hv-detail-chip">{age} yrs</span>}
                         {(patient ? patientCaseCondition(patient) : hvd?.condition) && (
@@ -5053,57 +5088,37 @@ function HomeVisitsView({
 
                     {/* Controls */}
                     <div className="hv-card-controls">
-                      <details className="hv-actions-menu" onClick={(e) => e.stopPropagation()}>
-                        <summary aria-label={`${patient ? patientDisplayName(patient) : 'Patient'} actions`} title="Actions">
-                          <MoreHorizontal size={18} />
-                        </summary>
-                        <div className="hv-actions-menu-list">
-                          <button
-                            type="button"
-                            className={allCompleted ? 'primary-menu-action' : ''}
-                            onClick={(e) => {
-                              closeActionMenu(e);
-                              scheduleMoreForPatient(gpId);
-                            }}
-                          >
-                            <Plus size={13} /> Schedule more
-                          </button>
-                          {bulkEditableSessions.length >= 2 && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                closeActionMenu(e);
-                                setBulkEditTarget({
-                                  patientName: patient ? patientDisplayName(patient) : 'Patient',
-                                  sessionType: 'home',
-                                  sessions: bulkEditableSessions,
-                                });
-                              }}
-                            >
-                              <ClipboardList size={13} /> Bulk edit ({bulkEditableSessions.length})
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              closeActionMenu(e);
-                              patient && onOpenPatient(patient.id);
-                            }}
-                          >
-                            <ExternalLink size={13} /> Patient details
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              closeActionMenu(e);
-                              toggleExpand(gpId);
-                            }}
-                          >
-                            <ChevronRight size={13} className={`hv-chevron${isOpen ? ' rotated' : ''}`} />
-                            {isOpen ? 'Hide sessions' : `Show ${total} session${total !== 1 ? 's' : ''}`}
-                          </button>
-                        </div>
-                      </details>
+                      <button
+                        type="button"
+                        className={`hv-action-icon${allCompleted ? ' primary' : ''}`}
+                        title="Schedule more"
+                        aria-label={`Schedule more for ${patient ? patientDisplayName(patient) : 'patient'}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          scheduleMoreForPatient(gpId);
+                        }}
+                      >
+                        <Plus size={15} />
+                      </button>
+                      {bulkEditableSessions.length >= 2 && (
+                        <button
+                          type="button"
+                          className="hv-action-icon"
+                          title={`Bulk edit ${bulkEditableSessions.length} sessions`}
+                          aria-label={`Bulk edit ${bulkEditableSessions.length} sessions for ${patient ? patientDisplayName(patient) : 'patient'}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBulkEditTarget({
+                              patientName: patient ? patientDisplayName(patient) : 'Patient',
+                              sessionType: 'home',
+                              sessions: bulkEditableSessions,
+                            });
+                          }}
+                        >
+                          <ClipboardList size={15} />
+                        </button>
+                      )}
+                      <ChevronRight size={17} className={`hv-chevron${isOpen ? ' rotated' : ''}`} aria-hidden="true" />
                     </div>
                   </div>
 
@@ -5115,7 +5130,7 @@ function HomeVisitsView({
                           <div className="hv-session-left">
                             <span className={`therapy-level-badge ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
                             <div className="hv-session-info">
-                              <span className="hv-session-type">{formatTherapyTypeDisplay(session.therapyType)}</span>
+                              <TherapyTypeSummary value={session.therapyType} compact />
                               <span className="hv-session-time"><Clock size={10} /> {formatDateTime(session.scheduledAt)}</span>
                               {sessionDoctorName(session, patient, staff) && (
                                 <span className="hv-session-note">Doctor: {sessionDoctorName(session, patient, staff)}</span>
@@ -5683,7 +5698,6 @@ function RecordSessionModal({
     patientId: '',
     clinicId: data.clinics[0]?.id ?? '',
     therapyType: '',
-    therapyLevel: 'basic' as TherapyLevel,
     scheduledAt: nowLocal,
     status: 'completed' as SessionStatus,
     amountCollected: '',
@@ -5701,7 +5715,7 @@ function RecordSessionModal({
       clinicId:         form.clinicId,
       therapyType:      form.therapyType,
       sessionType:      'clinic',
-      therapyLevel:     form.therapyLevel,
+      therapyLevel:     inferredTherapyLevel(form.therapyType),
       scheduledAt:      form.scheduledAt,
       status:           form.status,
       amountCollected:  form.amountCollected ? parseFloat(form.amountCollected) : null,
@@ -5754,21 +5768,6 @@ function RecordSessionModal({
               <Stethoscope size={15} />
               Clinic walk-in session
             </div>
-
-            <label>
-              Therapy level
-              <div className="toggle-row">
-                {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
-                  <button
-                    key={lvl} type="button"
-                    className={`toggle-btn level-${lvl} ${form.therapyLevel === lvl ? 'active' : ''}`}
-                    onClick={() => set('therapyLevel', lvl)}
-                  >
-                    {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </label>
           </div>
 
           {/* Right column */}
@@ -5846,11 +5845,9 @@ function ScheduleNewPage({
     : undefined;
   const [patientId, setPatientId] = useState(preset.patientId ?? templateSession?.patientId ?? clinicPatients[0]?.id ?? '');
   const sessionType: SessionType = 'clinic';
-  const [therapyLevel, setTherapyLevel] = useState<TherapyLevel>(templateSession?.therapyLevel ?? 'basic');
   const [therapyType, setTherapyType] = useState(templateSession?.therapyType ?? '');
   const [dualTherapy, setDualTherapy] = useState(false);
   const [therapyType2, setTherapyType2] = useState('');
-  const [therapyLevel2, setTherapyLevel2] = useState<TherapyLevel>('basic');
   const [startTime2, setStartTime2] = useState('11:00');
   const [assignedStaffId, setAssignedStaffId] = useState(templateSession?.assignedStaffId || currentUser.id);
   const [notes, setNotes] = useState(templateSession?.notes ?? '');
@@ -5890,7 +5887,6 @@ function ScheduleNewPage({
     if (!templateSession) return;
     setPatientId(templateSession.patientId);
     setTherapyType(templateSession.therapyType);
-    setTherapyLevel(templateSession.therapyLevel ?? 'basic');
     setAssignedStaffId(templateSession.assignedStaffId || currentUser.id);
     setNotes(templateSession.notes ?? '');
     setAmountPerSession(templateSession.amountCollected != null ? amountInputValue(templateSession.amountCollected) : '');
@@ -5898,7 +5894,6 @@ function ScheduleNewPage({
     setStartTime(sessionTimeKey(templateSession.scheduledAt));
     setDualTherapy(false);
     setTherapyType2('');
-    setTherapyLevel2('basic');
   }, [currentUser.id, templateSession]);
 
   useEffect(() => {
@@ -5931,10 +5926,10 @@ function ScheduleNewPage({
 
     setSubmitting(true);
     previewDates.forEach((scheduledAt) => {
-      onAddSession({ ...base, scheduledAt, therapyType: therapyType.trim(), therapyLevel });
+      onAddSession({ ...base, scheduledAt, therapyType: therapyType.trim(), therapyLevel: inferredTherapyLevel(therapyType) });
       if (dualTherapy && therapyType2.trim()) {
         const scheduledAt2 = withTime(scheduledAt, startTime2);
-        onAddSession({ ...base, scheduledAt: scheduledAt2, therapyType: therapyType2.trim(), therapyLevel: therapyLevel2 });
+        onAddSession({ ...base, scheduledAt: scheduledAt2, therapyType: therapyType2.trim(), therapyLevel: inferredTherapyLevel(therapyType2) });
       }
     });
 
@@ -6030,16 +6025,6 @@ function ScheduleNewPage({
               </button>
             </div>
             <TherapyTypeSelect required value={therapyType} onChange={setTherapyType} />
-            <div className="toggle-row" style={{ marginTop: 6 }}>
-              {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
-                <button key={lvl} type="button"
-                  className={`toggle-btn level-${lvl} ${therapyLevel === lvl ? 'active' : ''}`}
-                  onClick={() => setTherapyLevel(lvl)}
-                >
-                  {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* Therapy 2 (dual) */}
@@ -6049,16 +6034,6 @@ function ScheduleNewPage({
                 <label className="dual-therapy-label">Therapy 2</label>
               </div>
               <TherapyTypeSelect required value={therapyType2} onChange={setTherapyType2} />
-              <div className="toggle-row" style={{ marginTop: 6 }}>
-                {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
-                  <button key={lvl} type="button"
-                    className={`toggle-btn level-${lvl} ${therapyLevel2 === lvl ? 'active' : ''}`}
-                    onClick={() => setTherapyLevel2(lvl)}
-                  >
-                    {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-                  </button>
-                ))}
-              </div>
               <label className="dual-slot-label">
                 <Clock size={13} /> Slot time for Therapy 2
                 <input
@@ -6288,8 +6263,8 @@ function ScheduleNewPage({
                           const time = sessionTimeKey(slot);
                           const label = dualTherapy
                             ? si === 0
-                              ? `${formatTherapyTypeDisplay(therapyType) || 'Therapy 1'} · ${therapyLevel}`
-                              : `${formatTherapyTypeDisplay(therapyType2) || 'Therapy 2'} · ${therapyLevel2}`
+                              ? `${formatTherapyTypeDisplay(therapyType) || 'Therapy 1'}`
+                              : `${formatTherapyTypeDisplay(therapyType2) || 'Therapy 2'}`
                             : (formatTherapyTypeDisplay(therapyType) || 'Session');
                           return (
                             <div key={slot + si} className="preview-item">
@@ -6344,7 +6319,6 @@ function CalendarView({
   const [bkPatients, setBkPatients]     = useState<string[]>([]);
   const [bkMulti, setBkMulti]           = useState(false);
   const [bkTherapy, setBkTherapy]       = useState('');
-  const [bkLevel, setBkLevel]           = useState<TherapyLevel>('basic');
   const [bkClinic, setBkClinic]         = useState('');
 
   const clinicsForSelector = currentUser.role === 'admin' ? allClinics : data.clinics;
@@ -6419,7 +6393,6 @@ function CalendarView({
     setBkPatients([]);
     setBkPatient(data.patients.find((p) => p.clinicId === cId)?.id ?? '');
     setBkTherapy('');
-    setBkLevel('basic');
     setBooking({ date: selectedDate, time, type: 'clinic', clinicId: cId });
   };
 
@@ -6433,7 +6406,7 @@ function CalendarView({
       scheduledAt:     buildLocalDateTime(booking.date, booking.time),
       therapyType:     bkTherapy.trim(),
       sessionType:     'clinic' as const,
-      therapyLevel:    bkLevel,
+      therapyLevel:    inferredTherapyLevel(bkTherapy),
       assignedStaffId: currentUser.id,
       status:          'scheduled' as const,
       completedAt:     null,
@@ -6462,7 +6435,7 @@ function CalendarView({
             <div className="cal-popover-title-row">
               <span className="cal-popover-icon">{isHome ? <Home size={16} /> : <Stethoscope size={16} />}</span>
               <div>
-                <h3 className="cal-popover-title">{formatTherapyTypeDisplay(popover.therapyType)}</h3>
+                <TherapyTypeSummary value={popover.therapyType} />
                 <p className="cal-popover-sub">{dateDisp} · {time}</p>
               </div>
             </div>
@@ -6643,18 +6616,6 @@ function CalendarView({
               <div className="bk-field">
                 <span className="bk-label">Therapy type <span className="required">*</span></span>
                 <TherapyTypeSelect required value={bkTherapy} onChange={setBkTherapy} />
-              </div>
-
-              <div className="bk-field">
-                <span className="bk-label">Therapy level</span>
-                <div className="toggle-row">
-                  {(['basic', 'rehab', 'advance'] as TherapyLevel[]).map((lvl) => (
-                    <button key={lvl} type="button"
-                      className={`toggle-btn level-${lvl}${bkLevel === lvl ? ' active' : ''}`}
-                      onClick={() => setBkLevel(lvl)}
-                    >{lvl.charAt(0).toUpperCase() + lvl.slice(1)}</button>
-                  ))}
-                </div>
               </div>
             </div>
 
@@ -6837,7 +6798,7 @@ function CalendarView({
                               <span className={`therapy-level-badge sm ${clinicSession.therapyLevel ?? 'basic'}`}>{clinicSession.therapyLevel ?? 'basic'}</span>
                             </div>
                             <div className="slot-booked-bottom">
-                              <span className="slot-therapy">{formatTherapyTypeDisplay(clinicSession.therapyType)}</span>
+                              <TherapyTypeSummary value={clinicSession.therapyType} compact />
                               <span className={`status sm ${clinicSession.status}`}>{statusLabel(clinicSession.status)}</span>
                             </div>
                           </button>
@@ -6960,7 +6921,7 @@ function HomeVisitCalendarView({
             <div className="cal-popover-title-row">
               <span className="cal-popover-icon"><Home size={16} /></span>
               <div>
-                <h3 className="cal-popover-title">{formatTherapyTypeDisplay(popover.therapyType)}</h3>
+                <TherapyTypeSummary value={popover.therapyType} />
                 <p className="cal-popover-sub">{dateDisp} · {formatSessionTime(popover.scheduledAt)}</p>
               </div>
             </div>
@@ -7127,7 +7088,7 @@ function HomeVisitCalendarView({
                           )}
                         </div>
                         <div className="calendar-sessions">
-                          {sessions.slice(0, 3).map((session) => {
+                          {sessions.slice(0, 2).map((session) => {
                             const patient = data.patients.find((item) => item.id === session.patientId);
                             return (
                               <button
@@ -7142,9 +7103,9 @@ function HomeVisitCalendarView({
                               </button>
                             );
                           })}
-                          {sessions.length > 3 && (
+                          {sessions.length > 2 && (
                             <button className="cal-more" onClick={() => { setSelectedDate(cell.dateStr!); setView('day'); }}>
-                              +{sessions.length - 3} more
+                              +{sessions.length - 2} more
                             </button>
                           )}
                         </div>
@@ -7202,7 +7163,7 @@ function HomeVisitCalendarView({
                                 <span className={`therapy-level-badge sm ${session.therapyLevel ?? 'basic'}`}>{session.therapyLevel ?? 'basic'}</span>
                               </div>
                               <div className="slot-booked-bottom">
-                                <span className="slot-therapy">{formatTherapyTypeDisplay(session.therapyType)}</span>
+                                <TherapyTypeSummary value={session.therapyType} compact />
                                 <span className={`status sm ${session.status}`}>{statusLabel(session.status)}</span>
                               </div>
                             </button>
@@ -7728,9 +7689,16 @@ const ATTENDANCE_SLOTS: Array<{ value: AttendanceSlot; label: string }> = [
   { value: 'morning', label: 'Morning' },
   { value: 'evening', label: 'Evening' },
 ];
+const ABSENCE_NOTE_OPTIONS = ['Sick', 'Personal', 'Medical', 'Emergency', 'Family', 'Travel'] as const;
+const CUSTOM_ABSENCE_NOTE = '__custom__';
 
 function attendanceKey(staffId: string, date: string, slot: AttendanceSlot) {
   return `${staffId}:${date}:${slot}`;
+}
+
+function absenceNoteSelectValue(note: string) {
+  if (!note) return '';
+  return ABSENCE_NOTE_OPTIONS.includes(note as typeof ABSENCE_NOTE_OPTIONS[number]) ? note : CUSTOM_ABSENCE_NOTE;
 }
 
 function shiftDate(value: string, days: number) {
@@ -7769,6 +7737,7 @@ function StaffAttendanceView({
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const [clinicFilter, setClinicFilter] = useState('all');
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [customNoteKeys, setCustomNoteKeys] = useState<Record<string, boolean>>({});
   const [savingKey, setSavingKey] = useState('');
   const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
   const monthKey = selectedDate.slice(0, 7);
@@ -7837,7 +7806,22 @@ function StaffAttendanceView({
           delete next[key];
           return next;
         });
+        setCustomNoteKeys((drafts) => {
+          const next = { ...drafts };
+          delete next[key];
+          return next;
+        });
       }
+    } finally {
+      setSavingKey('');
+    }
+  };
+
+  const saveAbsentNote = async (staff: Profile, slot: AttendanceSlot, key: string, notes: string) => {
+    setNoteDrafts((drafts) => ({ ...drafts, [key]: notes }));
+    setSavingKey(key);
+    try {
+      await onSetAttendance(staff, selectedDate, slot, true, notes);
     } finally {
       setSavingKey('');
     }
@@ -7944,6 +7928,7 @@ function StaffAttendanceView({
                     const record = attendanceMap.get(key);
                     const absent = record?.status === 'absent';
                     const notes = noteDrafts[key] ?? record?.notes ?? '';
+                    const useCustomNote = customNoteKeys[key] || absenceNoteSelectValue(notes) === CUSTOM_ABSENCE_NOTE;
                     return (
                       <div key={slot.value} className={`attendance-slot-cell ${absent ? 'absent' : 'present'}`}>
                         <div className="attendance-slot-label">{slot.label}</div>
@@ -7966,12 +7951,39 @@ function StaffAttendanceView({
                           </button>
                         </div>
                         {absent && (
-                          <input
-                            value={notes}
-                            onChange={(e) => setNoteDrafts((drafts) => ({ ...drafts, [key]: e.target.value }))}
-                            onBlur={() => void saveSlot(staff, slot.value, true)}
-                            placeholder="Absent note"
-                          />
+                          <div className="attendance-note-fields">
+                            <select
+                              value={useCustomNote ? CUSTOM_ABSENCE_NOTE : absenceNoteSelectValue(notes)}
+                              disabled={savingKey === key}
+                              onChange={(e) => {
+                                const next = e.target.value;
+                                if (next === CUSTOM_ABSENCE_NOTE) {
+                                  setCustomNoteKeys((drafts) => ({ ...drafts, [key]: true }));
+                                  return;
+                                }
+                                setCustomNoteKeys((drafts) => {
+                                  const updated = { ...drafts };
+                                  delete updated[key];
+                                  return updated;
+                                });
+                                void saveAbsentNote(staff, slot.value, key, next);
+                              }}
+                            >
+                              <option value="">Reason</option>
+                              {ABSENCE_NOTE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
+                              <option value={CUSTOM_ABSENCE_NOTE}>Other / custom</option>
+                            </select>
+                            {useCustomNote && (
+                              <input
+                                value={notes}
+                                onChange={(e) => setNoteDrafts((drafts) => ({ ...drafts, [key]: e.target.value }))}
+                                onBlur={() => void saveSlot(staff, slot.value, true)}
+                                placeholder="Custom reason"
+                              />
+                            )}
+                          </div>
                         )}
                       </div>
                     );
@@ -7994,20 +8006,33 @@ function StaffAttendanceView({
 // ─── Shared Components ────────────────────────────────────────────────────────
 
 function MetricCard({
-  icon: Icon, label, value, accent, sub,
+  icon: Icon, label, value, accent, sub, onClick,
 }: {
   icon: LucideIcon;
   label: string;
   value: string;
   accent: 'teal' | 'blue' | 'amber' | 'green';
   sub?: string;
+  onClick?: () => void;
 }) {
-  return (
-    <div className={`metric-card accent-${accent}`}>
+  const content = (
+    <>
       <div className="metric-icon-wrap"><Icon size={20} /></div>
       <span className="metric-label">{label}</span>
       <strong className="metric-value">{value}</strong>
       {sub && <span className="metric-sub">{sub}</span>}
+    </>
+  );
+  if (onClick) {
+    return (
+      <button type="button" className={`metric-card metric-card-button accent-${accent}`} onClick={onClick}>
+        {content}
+      </button>
+    );
+  }
+  return (
+    <div className={`metric-card accent-${accent}`}>
+      {content}
     </div>
   );
 }
@@ -8215,7 +8240,7 @@ function SessionRow({
             {session.therapyLevel ?? 'basic'}
           </span>
         </div>
-        <strong>{formatTherapyTypeDisplay(session.therapyType)}</strong>
+        <TherapyTypeSummary value={session.therapyType} compact />
         <small>{patient ? patientDisplayName(patient) : 'Unknown patient'}{patient?.gender ? ` · ${patient.gender}` : ''} · {clinicName(data.clinics, session.clinicId)}</small>
       </div>
       <div className="session-meta">
@@ -8521,6 +8546,21 @@ function TherapyTypeSelect({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function TherapyTypeSummary({ value, compact = false }: { value: string; compact?: boolean }) {
+  const groups = groupedTherapyTypes(value);
+  if (groups.length === 0) return null;
+  return (
+    <div className={`therapy-summary${compact ? ' compact' : ''}`}>
+      {groups.map((group) => (
+        <div key={group.label} className="therapy-summary-group">
+          <span className="therapy-summary-parent">{group.label}</span>
+          <span className="therapy-summary-children">{group.options.join(', ')}</span>
+        </div>
+      ))}
     </div>
   );
 }

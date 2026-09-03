@@ -349,6 +349,21 @@ nav { display: grid; gap: 4px; }
 .metric-card.accent-blue::before  { background: var(--blue); }
 .metric-card.accent-amber::before { background: var(--amber); }
 .metric-card.accent-green::before { background: var(--green); }
+.metric-card-button {
+  width: 100%;
+  border: 1px solid var(--border);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.metric-card-button:hover,
+.metric-card-button:focus-visible {
+  border-color: var(--teal);
+  box-shadow: 0 6px 18px rgba(14,159,142,0.12);
+  outline: none;
+  transform: translateY(-1px);
+}
 
 .metric-icon-wrap {
   width: 38px;
@@ -2147,7 +2162,7 @@ textarea { min-height: 76px; resize: vertical; }
 .cal-stat.scheduled { background: var(--blue-light); color: #1d4ed8; }
 .cal-stat.completed { background: var(--green-light); color: var(--green-dark); }
 .cal-stat.cancelled { background: #fee2e2; color: #991b1b; }
-.cal-stat.home      { background: var(--amber-light); color: var(--amber-dark); }
+.cal-stat.home      { background: #e0f2fe; color: #0369a1; }
 .cal-stat.revenue   { background: var(--teal-light);  color: var(--teal-dark); }
 .clinic-selector {
   min-width: 160px;
@@ -2241,7 +2256,7 @@ textarea { min-height: 76px; resize: vertical; }
 .chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
 .cal-session-chip.clinic { background: #e6f7f4; color: var(--teal-dark); }
-.cal-session-chip.home   { background: #fef3c7; color: var(--amber-dark); }
+.cal-session-chip.home   { background: #e0f2fe; color: #0369a1; }
 .cal-session-chip.status-completed          { background: #dcfce7; color: #15803d; }
 .cal-session-chip.status-cancelled,
 .cal-session-chip.status-no_show            { background: #fee2e2; color: #991b1b; text-decoration: line-through; opacity: 0.85; }
@@ -2277,9 +2292,218 @@ textarea { min-height: 76px; resize: vertical; }
   flex-shrink: 0;
 }
 .legend-dot.clinic    { background: var(--teal); }
-.legend-dot.home      { background: var(--amber); }
+.legend-dot.home      { background: #0284c7; }
 .legend-dot.completed { background: var(--green); }
 .legend-dot.cancelled { background: var(--coral); }
+
+/* Compact home visit calendar */
+.home-visit-calendar-page {
+  gap: 8px;
+}
+.home-visit-calendar-page .calendar-toolbar {
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+.home-visit-calendar-page .cal-nav-group {
+  flex: 1 1 520px;
+  min-width: 420px;
+  gap: 6px;
+  justify-content: flex-start;
+}
+.home-visit-calendar-page .cal-toolbar-right {
+  flex: 1 1 430px;
+  min-width: 0;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.home-visit-calendar-page .calendar-month-title {
+  font-size: 0.86rem;
+}
+.home-visit-calendar-page .view-toggle-btn {
+  padding: 5px 10px;
+  font-size: 0.72rem;
+}
+.home-visit-calendar-page .ghost-button.icon-only {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+}
+.home-visit-calendar-page .cal-today-btn {
+  min-height: 30px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+}
+.home-visit-calendar-page .clinic-selector {
+  min-height: 30px;
+  min-width: 210px;
+  font-size: 0.78rem;
+}
+.home-visit-calendar-page .cal-month-stats {
+  display: none;
+}
+.home-visit-calendar-page .cal-stat {
+  min-width: 0;
+  padding: 2px 7px;
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+.home-visit-calendar-page .cal-stat svg {
+  flex-shrink: 0;
+}
+.home-visit-calendar-page .calendar-header-row {
+  border-bottom-width: 1px;
+}
+.home-visit-calendar-page .calendar-dow {
+  padding: 6px;
+  font-size: 0.66rem;
+}
+.home-visit-calendar-page .calendar-cell {
+  min-height: 74px;
+  padding: 4px;
+}
+.home-visit-calendar-page .calendar-date-row {
+  margin-bottom: 1px;
+}
+.home-visit-calendar-page .calendar-date,
+.home-visit-calendar-page .calendar-cell.today .calendar-date {
+  width: 20px;
+  height: 20px;
+  margin-bottom: 2px;
+  font-size: 0.7rem;
+}
+.home-visit-calendar-page .calendar-sessions {
+  gap: 2px;
+}
+.home-visit-calendar-page .cal-session-chip {
+  gap: 3px;
+  min-height: 18px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 0.6rem;
+}
+.home-visit-calendar-page .chip-time {
+  min-width: 25px;
+}
+.home-visit-calendar-page .cal-more {
+  min-height: 17px;
+  padding: 0 4px;
+  font-size: 0.6rem;
+}
+.home-visit-calendar-page .calendar-legend {
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 0.68rem;
+}
+.home-visit-calendar-page .day-view-panel {
+  border-radius: 10px;
+}
+.home-visit-calendar-page .day-col-header {
+  background: #eff6ff;
+  color: #075985;
+  padding: 7px 8px;
+  font-size: 0.76rem;
+}
+.home-visit-calendar-page .day-col-header.home-col {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.home-visit-calendar-page .day-col-header small {
+  font-size: 0.64rem;
+}
+.home-visit-calendar-page .day-view-grid {
+  max-height: calc(100vh - 270px);
+}
+.home-visit-calendar-page .day-slot-row.home-only,
+.home-visit-calendar-page .day-view-header.home-only {
+  grid-template-columns: 46px 1fr;
+}
+.home-visit-calendar-page .day-slot-row {
+  min-height: 27px;
+}
+.home-visit-calendar-page .day-time-label {
+  min-width: 46px;
+  padding: 3px 6px 0 0;
+  font-size: 0.64rem;
+}
+.home-visit-calendar-page .day-slot {
+  padding: 2px 3px;
+}
+.home-visit-calendar-page .day-slot-empty {
+  min-height: 21px;
+  padding: 2px 6px;
+  font-size: 0.64rem;
+}
+.home-visit-calendar-page .day-slot-stack {
+  gap: 2px;
+  min-height: 21px;
+}
+.home-visit-calendar-page .day-slot-booked,
+.home-visit-calendar-page .day-slot-booked.compact {
+  min-height: 23px;
+  padding: 3px 5px;
+  border-radius: 6px;
+}
+.home-visit-calendar-page .day-slot-booked.home {
+  background: #eff6ff;
+  border-color: #60a5fa;
+}
+.home-visit-calendar-page .slot-patient {
+  max-width: 220px;
+  font-size: 0.72rem;
+}
+.home-visit-calendar-page .therapy-level-badge.sm,
+.home-visit-calendar-page .status.sm {
+  font-size: 0.58rem;
+  padding: 1px 5px;
+}
+.home-visit-calendar-page .therapy-summary.compact .therapy-summary-parent {
+  display: none;
+}
+.home-visit-calendar-page .therapy-summary.compact .therapy-summary-children {
+  font-size: 0.66rem;
+  font-weight: 650;
+}
+@media (max-width: 720px) {
+  .home-visit-calendar-page .calendar-toolbar {
+    align-items: stretch;
+    padding: 7px;
+  }
+  .home-visit-calendar-page .cal-nav-group,
+  .home-visit-calendar-page .cal-toolbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .home-visit-calendar-page .cal-month-stats {
+    width: 100%;
+  }
+  .home-visit-calendar-page .clinic-selector {
+    width: 100%;
+    min-width: 0;
+  }
+  .home-visit-calendar-page .calendar-cell {
+    min-height: 66px;
+    padding: 3px;
+  }
+  .home-visit-calendar-page .calendar-dow {
+    padding: 5px 2px;
+  }
+  .home-visit-calendar-page .cal-session-chip {
+    font-size: 0.56rem;
+  }
+  .home-visit-calendar-page .chip-time {
+    display: none;
+  }
+  .home-visit-calendar-page .calendar-legend {
+    display: none;
+  }
+  .home-visit-calendar-page .day-view-grid {
+    max-height: calc(100vh - 285px);
+  }
+}
 
 /* ── Session restore loading screen ── */
 .session-loading {
@@ -3346,6 +3570,27 @@ textarea { min-height: 76px; resize: vertical; }
   padding: 14px 16px;
 }
 
+.home-dashboard {
+  gap: 12px;
+}
+.home-dashboard .metric-card {
+  padding: 14px 16px;
+  gap: 6px;
+}
+.home-dashboard .metric-icon-wrap {
+  width: 34px;
+  height: 34px;
+}
+.home-dashboard .metric-value {
+  font-size: 1.45rem;
+}
+.home-today-panel {
+  padding: 16px;
+}
+.home-today-panel .panel-title {
+  margin-bottom: 10px;
+}
+
 .home-dashboard-hero {
   display: flex;
   align-items: center;
@@ -3735,6 +3980,12 @@ textarea { min-height: 76px; resize: vertical; }
 }
 .slot-patient  { font-size: 0.78rem; font-weight: 700; color: var(--ink);  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 .slot-therapy  { font-size: 0.7rem;  color: var(--slate); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+.slot-booked-bottom .therapy-summary { flex: 1; min-width: 0; }
+.slot-booked-bottom .therapy-summary-children {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .slot-lock-icon {
   position: absolute;
   top: 4px;
@@ -4022,6 +4273,38 @@ textarea { min-height: 76px; resize: vertical; }
   pointer-events: none;
   top: 40px;
 }
+.therapy-summary {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.therapy-summary-group {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.therapy-summary-parent {
+  color: var(--teal-dark);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.therapy-summary-children {
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.therapy-summary.compact {
+  gap: 3px;
+}
+.therapy-summary.compact .therapy-summary-parent {
+  font-size: 0.62rem;
+}
+.therapy-summary.compact .therapy-summary-children {
+  font-size: 0.78rem;
+}
 
 /* ── Staff attendance ── */
 .staff-attendance-page .attendance-toolbar {
@@ -4186,11 +4469,21 @@ textarea { min-height: 76px; resize: vertical; }
   cursor: wait;
   opacity: 0.65;
 }
-.attendance-slot-cell input {
+.attendance-note-fields {
+  width: min(100%, 176px);
+  display: grid;
+  gap: 6px;
+}
+.attendance-slot-cell input,
+.attendance-slot-cell select {
   width: min(100%, 176px);
   min-height: 34px;
   font-size: 0.8rem;
   padding: 6px 9px;
+}
+.attendance-note-fields input,
+.attendance-note-fields select {
+  width: 100%;
 }
 .attendance-actions-cell {
   min-width: 0;
@@ -4259,7 +4552,9 @@ textarea { min-height: 76px; resize: vertical; }
     align-items: center;
     justify-content: start;
   }
-  .attendance-slot-cell input {
+  .attendance-slot-cell input,
+  .attendance-slot-cell select,
+  .attendance-note-fields {
     grid-column: 2;
   }
   .attendance-slot-label {
@@ -4314,9 +4609,13 @@ textarea { min-height: 76px; resize: vertical; }
     max-width: none;
   }
   .attendance-slot-cell { grid-template-columns: 1fr; }
-  .attendance-slot-cell input { grid-column: auto; }
+  .attendance-slot-cell input,
+  .attendance-slot-cell select,
+  .attendance-note-fields { grid-column: auto; }
   .attendance-status-switch,
   .attendance-slot-cell input,
+  .attendance-slot-cell select,
+  .attendance-note-fields,
   .attendance-actions-cell .secondary-button { width: 100%; }
   .attendance-history-row { grid-template-columns: 1fr; }
   .calendar-cell { min-height: 64px; }
@@ -4354,6 +4653,11 @@ textarea { min-height: 76px; resize: vertical; }
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
+  cursor: pointer;
+}
+.hv-card-header:focus-visible {
+  outline: 3px solid rgba(14,159,142,0.18);
+  outline-offset: 2px;
 }
 
 .hv-card-avatar {
@@ -4369,6 +4673,16 @@ textarea { min-height: 76px; resize: vertical; }
   justify-content: center;
   flex-shrink: 0;
 }
+.hv-profile-trigger {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.hv-profile-trigger:hover,
+.hv-profile-trigger:focus-visible {
+  box-shadow: 0 0 0 3px rgba(14,159,142,0.18);
+  outline: none;
+}
 
 .hv-card-main   { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 
@@ -4378,7 +4692,24 @@ textarea { min-height: 76px; resize: vertical; }
   gap: 6px;
   flex-wrap: wrap;
 }
-.hv-card-name { font-weight: 700; font-size: 0.95rem; color: var(--ink); }
+.hv-card-name {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+.hv-card-name:hover,
+.hv-card-name:focus-visible {
+  color: var(--teal-dark);
+  text-decoration: underline;
+  outline: none;
+}
 
 .hv-detail-chip {
   padding: 1px 8px;
@@ -4442,10 +4773,7 @@ textarea { min-height: 76px; resize: vertical; }
 
 /* Controls */
 .hv-card-controls { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-.hv-actions-menu {
-  position: relative;
-}
-.hv-actions-menu summary {
+.hv-action-icon {
   width: 34px;
   height: 34px;
   display: inline-flex;
@@ -4456,73 +4784,20 @@ textarea { min-height: 76px; resize: vertical; }
   background: var(--surface);
   color: var(--slate);
   cursor: pointer;
-  list-style: none;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.hv-actions-menu summary::-webkit-details-marker {
-  display: none;
-}
-.hv-actions-menu summary:hover,
-.hv-actions-menu[open] summary {
+.hv-action-icon:hover,
+.hv-action-icon:focus-visible {
   border-color: var(--teal);
   background: #f0fdfa;
   color: var(--teal-dark);
+  outline: none;
 }
-.hv-actions-menu-list {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 20;
-  min-width: 190px;
-  display: grid;
-  gap: 3px;
-  padding: 6px;
-  border: 1.5px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
-}
-.hv-actions-menu-list button {
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--slate);
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-align: left;
-  cursor: pointer;
-  padding: 0 10px;
-}
-.hv-actions-menu-list button:hover {
-  background: var(--bg);
-  color: var(--teal-dark);
-}
-.hv-actions-menu-list button.primary-menu-action {
+.hv-action-icon.primary {
+  border-color: rgba(14,159,142,0.28);
   background: var(--teal-light);
   color: var(--teal-dark);
 }
-
-.hv-expand-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 11px;
-  border-radius: 8px;
-  border: 1.5px solid var(--border);
-  background: var(--bg);
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--slate);
-  cursor: pointer;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-.hv-expand-btn:hover,
-.hv-expand-btn.open { border-color: var(--teal); color: var(--teal); background: #f0fdfa; }
 
 .hv-chevron { transition: transform 0.2s; }
 .hv-chevron.rotated { transform: rotate(90deg); }
