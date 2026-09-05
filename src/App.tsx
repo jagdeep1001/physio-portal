@@ -3229,26 +3229,24 @@ function PatientDetailView({
                       <span className="revenue-badge est pp-session-amount">Est. {formatCurrency(session.amountCollected)}</span>
                     )}
                     <PaymentBadge session={session} payments={data.payments} />
-                    {(session.status === 'scheduled' || session.status === 'completed') && (
-                      <div className="pp-session-actions">
+                    <div className="pp-session-actions">
+                      <button
+                        className="secondary-button icon-only"
+                        title={editSessionTitle(session.status)}
+                        onClick={() => setEditingSession(session)}
+                      >
+                        <ClipboardList size={12} />
+                      </button>
+                      {session.status === 'scheduled' && (
                         <button
-                          className="secondary-button icon-only"
-                          title={session.status === 'completed' ? 'Edit completed session' : 'Edit scheduled session'}
-                          onClick={() => setEditingSession(session)}
+                          className="danger-button icon-only"
+                          title="Delete scheduled session"
+                          onClick={() => void onDeleteSession(session.id)}
                         >
-                          <ClipboardList size={12} />
+                          <Trash2 size={12} />
                         </button>
-                        {session.status === 'scheduled' && (
-                          <button
-                            className="danger-button icon-only"
-                            title="Delete scheduled session"
-                            onClick={() => void onDeleteSession(session.id)}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -4488,7 +4486,7 @@ function SessionsView({
                 const scheduleTemplate = next ?? [...sessions]
                   .filter((session) => session.status === 'scheduled' || session.status === 'completed')
                   .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
-                const bulkEditableSessions = sessions.filter((s) => s.status === 'scheduled' || s.status === 'completed');
+                const bulkEditableSessions = sessions;
                 return (
                   <div key={patientId} className="patient-session-group">
                     <div className="patient-group-header">
@@ -4616,19 +4614,17 @@ function SessionsView({
                                       <PaymentBadge session={session} payments={data.payments} />
                                     </div>
                                     <div className="group-session-actions">
+                                      <button className="secondary-button icon-only" title={editSessionTitle(session.status)} onClick={() => setEditingSession(session)}>
+                                        <FileText size={13} />
+                                      </button>
                                       {(session.status === 'completed' || session.status === 'scheduled') && (
-                                        <>
-                                          <button className="secondary-button icon-only" title={session.status === 'completed' ? 'Edit completed session' : 'Edit session'} onClick={() => setEditingSession(session)}>
-                                            <FileText size={13} />
-                                          </button>
-                                          <button
-                                            className="secondary-button icon-only"
-                                            title="Schedule more using this session"
-                                            onClick={() => onScheduleFromSession(session)}
-                                          >
-                                            <Plus size={13} />
-                                          </button>
-                                        </>
+                                        <button
+                                          className="secondary-button icon-only"
+                                          title="Schedule more using this session"
+                                          onClick={() => onScheduleFromSession(session)}
+                                        >
+                                          <Plus size={13} />
+                                        </button>
                                       )}
                                       {session.status === 'scheduled' && (
                                         <>
@@ -5000,7 +4996,7 @@ function HomeVisitsView({
               const hvd = patient?.homeVisitDetails;
               const age = patient ? patientAgeValue(patient) : '';
               const doctorName = patientDoctorName(patient, staff) || sessionDoctorName(next ?? sessions[0], patient, staff);
-              const bulkEditableSessions = sessions.filter((s) => s.status === 'scheduled' || s.status === 'completed');
+              const bulkEditableSessions = sessions;
 
               return (
                 <div key={gpId} className={`hv-patient-card${isOpen ? ' open' : ''}${allCompleted ? ' all-completed' : ''}`}>
@@ -5147,12 +5143,10 @@ function HomeVisitsView({
                             )}
                             <PaymentBadge session={session} payments={data.payments} />
                             <div className="hv-session-actions">
-                              {(session.status === 'completed' || session.status === 'scheduled') && (
-                                <button className="secondary-button icon-only" title={session.status === 'completed' ? 'Edit completed session' : 'Edit session'}
-                                  onClick={() => setEditingSession(session)}>
-                                  <ClipboardList size={12} />
-                                </button>
-                              )}
+                              <button className="secondary-button icon-only" title={editSessionTitle(session.status)}
+                                onClick={() => setEditingSession(session)}>
+                                <ClipboardList size={12} />
+                              </button>
                               {session.status === 'scheduled' && (
                                 <>
                                   <button className="primary-button icon-only" title="Mark complete"
@@ -5473,9 +5467,10 @@ function EditSessionModal({
   const setStatus = (status: SessionStatus) => setForm((f) => ({
     ...f,
     status,
-    amountCollected: status === 'completed' ? f.amountCollected : '',
+    amountCollected: status === 'cancelled' || status === 'no_show' ? '' : f.amountCollected,
   }));
   const isHome = form.sessionType === 'home';
+  const hasBillableAmount = form.status === 'completed' || form.status === 'scheduled';
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -5492,13 +5487,12 @@ function EditSessionModal({
       scheduledAt,
       notes:           form.notes,
       treatmentNotes:  form.treatmentNotes,
-      amountCollected: status === 'completed' && form.amountCollected !== '' ? parseFloat(form.amountCollected) : null,
+      amountCollected: hasBillableAmount && form.amountCollected !== '' ? parseFloat(form.amountCollected) : null,
     });
   };
 
   const patient = data.patients.find((p) => p.id === session.patientId);
   const slotOptions = isHome ? HOME_VISIT_SLOTS : CLINIC_VISIT_SLOTS;
-  const isCompleted = session.status === 'completed';
 
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -5509,7 +5503,7 @@ function EditSessionModal({
             {isHome ? <Home size={18} /> : <Stethoscope size={18} />}
           </div>
           <div>
-            <h3 className="modal-title">{isCompleted ? 'Edit completed session' : 'Edit session'}</h3>
+            <h3 className="modal-title">{editSessionTitle(session.status)}</h3>
             <p className="modal-sub">
               {patient ? patientDisplayName(patient) : 'Unknown'}
               {lockSessionType === 'home' ? ' · Home visit' : lockSessionType === 'clinic' ? ' · Clinic' : ''}
@@ -5574,23 +5568,21 @@ function EditSessionModal({
               ))}
             </div>
           </label>
-          {isCompleted && (
-            <label>
-              Session status
-              <div className="toggle-row">
-                {(['completed', 'cancelled', 'no_show'] as SessionStatus[]).map((status) => (
-                  <button
-                    key={status}
-                    type="button"
-                    className={`toggle-btn status-${status} ${form.status === status ? 'active' : ''}`}
-                    onClick={() => setStatus(status)}
-                  >
-                    {statusLabel(status)}
-                  </button>
-                ))}
-              </div>
-            </label>
-          )}
+          <label>
+            Session status
+            <div className="toggle-row">
+              {(['scheduled', 'completed', 'cancelled', 'no_show'] as SessionStatus[]).map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  className={`toggle-btn status-${status} ${form.status === status ? 'active' : ''}`}
+                  onClick={() => setStatus(status)}
+                >
+                  {statusLabel(status)}
+                </button>
+              ))}
+            </div>
+          </label>
           <label>
             {form.status === 'completed' ? 'Session fee (₹)' : 'Estimated amount (₹)'}
             <input
@@ -5599,7 +5591,7 @@ function EditSessionModal({
               step="0.01"
               value={form.amountCollected}
               onChange={(e) => set('amountCollected', e.target.value)}
-              disabled={form.status !== 'completed'}
+              disabled={!hasBillableAmount}
               placeholder="Leave blank if unknown"
             />
           </label>
@@ -6477,14 +6469,12 @@ function CalendarView({
             )}
           </div>
           <div className="cal-popover-actions">
-            {(popover.status === 'scheduled' || popover.status === 'completed') && (
-              <button
-                className="secondary-button"
-                onClick={() => { setEditingSession(popover); setPopover(null); }}
-              >
-                <ClipboardList size={14} /> {popover.status === 'completed' ? 'Edit completed' : 'Edit session'}
-              </button>
-            )}
+            <button
+              className="secondary-button"
+              onClick={() => { setEditingSession(popover); setPopover(null); }}
+            >
+              <ClipboardList size={14} /> {editSessionTitle(popover.status)}
+            </button>
             {popover.status === 'scheduled' && (
               <>
                 <button
@@ -6961,11 +6951,9 @@ function HomeVisitCalendarView({
             )}
           </div>
           <div className="cal-popover-actions">
-            {(popover.status === 'scheduled' || popover.status === 'completed') && (
-              <button className="secondary-button" onClick={() => { setEditingSession(popover); setPopover(null); }}>
-                <ClipboardList size={14} /> {popover.status === 'completed' ? 'Edit completed' : 'Edit session'}
-              </button>
-            )}
+            <button className="secondary-button" onClick={() => { setEditingSession(popover); setPopover(null); }}>
+              <ClipboardList size={14} /> {editSessionTitle(popover.status)}
+            </button>
             {popover.status === 'scheduled' && (
               <>
                 <button className="primary-button" onClick={() => startCompletion(popover)}>
@@ -7699,6 +7687,13 @@ function attendanceKey(staffId: string, date: string, slot: AttendanceSlot) {
 function absenceNoteSelectValue(note: string) {
   if (!note) return '';
   return ABSENCE_NOTE_OPTIONS.includes(note as typeof ABSENCE_NOTE_OPTIONS[number]) ? note : CUSTOM_ABSENCE_NOTE;
+}
+
+function editSessionTitle(status: SessionStatus) {
+  if (status === 'completed') return 'Edit completed session';
+  if (status === 'cancelled') return 'Edit cancelled session';
+  if (status === 'no_show') return 'Edit no-show session';
+  return 'Edit scheduled session';
 }
 
 function shiftDate(value: string, days: number) {
